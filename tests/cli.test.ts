@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliIO, runCli } from "../src/commands/program.ts";
@@ -228,7 +228,7 @@ describe("local accounts and account routing", () => {
     const { run, store, config_path, connections } = await fixture();
     const secret = "interactive-local-token";
     const result = await run(
-      ["account", "add", "local", "--provider", "vultr", "--json"],
+      ["auth", "add", "local", "--provider", "vultr", "--json"],
       { env: {}, is_interactive: true, secret_input: secret },
     );
     expect(result.exit_code).toBe(0);
@@ -261,7 +261,7 @@ describe("local accounts and account routing", () => {
     const secret = "piped-local-token";
     const result = await run(
       [
-        "account",
+        "auth",
         "add",
         "automated",
         "--provider",
@@ -296,7 +296,7 @@ describe("local accounts and account routing", () => {
     ]) {
       const result = await run(
         [
-          "account",
+          "auth",
           "add",
           "invalid",
           "--provider",
@@ -328,10 +328,10 @@ describe("local accounts and account routing", () => {
     });
     await store.add(account("work", "VULTR_WORK_TOKEN"));
     await store.use("local");
-    const json_result = await run(["account", "list", "--json"], { env: {} });
+    const json_result = await run(["auth", "list", "--json"], { env: {} });
     expect(json_result.exit_code).toBe(0);
     expect(JSON.parse(json_result.stdout)).toEqual({
-      action: "account.list",
+      action: "auth.list",
       data: [
         {
           id: "local",
@@ -344,7 +344,7 @@ describe("local accounts and account routing", () => {
         { ...account("work", "VULTR_WORK_TOKEN"), is_default: false },
       ],
     });
-    const human_result = await run(["account", "list"], { env: {} });
+    const human_result = await run(["auth", "list"], { env: {} });
     expect(human_result.exit_code).toBe(0);
     for (const result of [json_result, human_result]) {
       expect(result.stdout).not.toContain(secret);
@@ -361,7 +361,7 @@ describe("local accounts and account routing", () => {
     ] as const) {
       const result = await run(
         [
-          "account",
+          "auth",
           "add",
           id,
           "--provider",
@@ -373,13 +373,11 @@ describe("local accounts and account routing", () => {
       );
       expect(result.exit_code).toBe(0);
     }
-    expect((await run(["account", "use", "work"], { env: {} })).exit_code).toBe(
-      0,
-    );
-    const result = await run(["account", "list", "--json"], { env: {} });
+    expect((await run(["auth", "use", "work"], { env: {} })).exit_code).toBe(0);
+    const result = await run(["auth", "list", "--json"], { env: {} });
     expect(result.exit_code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
-      action: "account.list",
+      action: "auth.list",
       data: [
         { ...account("work", "VULTR_WORK_TOKEN"), is_default: true },
         { ...account("personal", "VULTR_PERSONAL_TOKEN"), is_default: false },
@@ -680,6 +678,102 @@ describe("mutation boundaries", () => {
 });
 
 describe("CLI diagnostics and discovery", () => {
+  test.each([
+    {
+      scope: "spec",
+      resource: "region",
+      action: "spec.list.region",
+      provider_action: "regions",
+      id: "nrt",
+      args: [],
+    },
+    {
+      scope: "spec",
+      resource: "plan",
+      action: "spec.list.plan",
+      provider_action: "plans",
+      id: "vc2-1c-1gb",
+      args: ["--region", "nrt"],
+    },
+    {
+      scope: "spec",
+      resource: "image",
+      action: "spec.list.image",
+      provider_action: "images",
+      id: "2284",
+      args: [],
+    },
+    {
+      scope: "credential",
+      resource: "ssh-key",
+      action: "credential.list.ssh_key",
+      provider_action: "ssh_keys",
+      id: "key-1",
+      args: [],
+    },
+  ])(
+    "routes $scope list $resource to the selected provider with a scoped JSON action",
+    async ({ scope, resource, action, provider_action, id, args }) => {
+      const { run, addAccounts, calls } = await fixture();
+      await addAccounts();
+      const result = await run([scope, "list", resource, ...args, "--json"]);
+      expect(result.exit_code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        account_id: "work",
+        provider_id: "vultr",
+        action,
+        data: [{ id }],
+      });
+      expect(calls).toEqual([
+        {
+          action: provider_action,
+          api_key: credentials.VULTR_WORK_TOKEN,
+          ...(resource === "plan" ? { region_id: "nrt" } : {}),
+        },
+      ]);
+    },
+  );
+
+  test("rejects unknown specifications and incompatible filters before account selection", async () => {
+    const { run, config_path, connections, calls } = await fixture();
+    // Configuration reads would fail, proving validation precedes selection.
+    await mkdir(config_path);
+    const invalid_inputs = [
+      ["regions"],
+      ["ssh-key"],
+      ...["region", "plan", "image"].flatMap((resource) =>
+        [
+          ["--gpu", "Example GPU"],
+          ["--gpu-count", "2"],
+          ["--disk-gb", "40"],
+          ["--limit", "2"],
+        ].map((flags) => [resource, ...flags]),
+      ),
+      ...["region", "image", "offer"].map((resource) => [
+        resource,
+        "--region",
+        "nrt",
+      ]),
+    ];
+    for (const args of invalid_inputs) {
+      const result = await run(["spec", "list", ...args, "--json"], {
+        env: {},
+        is_interactive: true,
+      });
+      expect(result.exit_code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(JSON.parse(result.stderr)).toMatchObject({
+        error: { code: "invalid_input", message: expect.any(String) },
+      });
+      expect(result.secret_prompts).toEqual([]);
+      expect(result.confirmations).toEqual([]);
+      expect(result.stdin_reads).toBe(0);
+    }
+    expect(connections).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
   test("reports missing credentials without exposing other account secrets", async () => {
     const { run, addAccounts, connections } = await fixture();
     await addAccounts();

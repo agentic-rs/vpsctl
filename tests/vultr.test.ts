@@ -709,7 +709,7 @@ describe("Vultr validation and errors", () => {
       expect(error).toMatchObject({ code: "forbidden", status_code });
       expect(String(error)).toContain(reason);
       expect(String(error)).toContain(
-        "Add the IP address reported by Vultr to this user's API Access Control as a single-host entry, then run login again.",
+        "Add the IP address reported by Vultr to this user's API Access Control as a single-host entry, then run auth login again.",
       );
       expect(String(error)).not.toContain("Finalize Key Generation");
       expect(String(error)).not.toContain("new key");

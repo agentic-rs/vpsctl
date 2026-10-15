@@ -151,7 +151,7 @@ export function resolveAccount(
   if (!account_id) {
     throw new AppError(
       "invalid_input",
-      "Select an account with --account or set a default with account use.",
+      "Select an account with --account or set a default with auth use.",
     );
   }
   const account = validated_config.accounts.find(

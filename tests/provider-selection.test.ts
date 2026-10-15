@@ -107,7 +107,7 @@ describe("provider selection for offline account registration", () => {
   test("chooses a provider before requesting its credential fields", async () => {
     const { run, store, connections } = await fixture();
     const secret = "selected-provider-test-token";
-    const result = await run(["account", "add", "sample"], {
+    const result = await run(["auth", "add", "sample"], {
       is_interactive: true,
       selected_provider: "other",
       secret_input: secret,
@@ -139,7 +139,7 @@ describe("provider selection for offline account registration", () => {
     const { run, store, config_path, connections } = await fixture();
     const secret = "environment-selection-test-token";
     const result = await run(
-      ["account", "add", "sample", "--credential", "access_token=SAMPLE_TOKEN"],
+      ["auth", "add", "sample", "--credential", "access_token=SAMPLE_TOKEN"],
       {
         is_interactive: true,
         selected_provider: "other",
@@ -166,7 +166,7 @@ describe("provider selection for offline account registration", () => {
       ["sample", "--provider", "other"],
       ["other:sample@example.com"],
     ]) {
-      const result = await run(["account", "add", ...args], {
+      const result = await run(["auth", "add", ...args], {
         is_interactive: true,
         selected_provider: "must-not-select-provider",
         secret_input: "inferred-provider-test-token",
@@ -196,7 +196,7 @@ describe("provider selection for offline account registration", () => {
         is_interactive: true,
       },
     ]) {
-      const result = await run(["account", "add", "sample", ...args], {
+      const result = await run(["auth", "add", "sample", ...args], {
         is_interactive,
         env: { SAMPLE_KEY: "scripted-provider-test-key" },
         stdin_input: JSON.stringify({ api_key: "piped-provider-test-key" }),
@@ -219,7 +219,7 @@ describe("provider selection for offline account registration", () => {
       ["other:sample@example.com"],
     ]) {
       const result = await run(
-        ["account", "add", ...args, "--credentials-stdin", "--json"],
+        ["auth", "add", ...args, "--credentials-stdin", "--json"],
         {
           is_interactive: true,
           stdin_input: JSON.stringify({
@@ -233,7 +233,7 @@ describe("provider selection for offline account registration", () => {
       expect(result.stdin_reads).toBe(1);
       expect(result.stderr).toBe("");
       expect(JSON.parse(result.stdout)).toEqual({
-        action: "account.add",
+        action: "auth.add",
         data: { id: args[0], provider_id: "other" },
       });
       expect(result.stdout).not.toContain("piped-selection-test-token");
@@ -249,7 +249,7 @@ describe("provider selection for offline account registration", () => {
       ["missing:sample@example.com"],
       ["sample", "--provider", "missing"],
     ]) {
-      const result = await run(["account", "add", ...args], {
+      const result = await run(["auth", "add", ...args], {
         is_interactive: true,
         secret_input: "must-not-read-test-token",
       });
@@ -265,7 +265,7 @@ describe("provider selection for offline account registration", () => {
 
   test("cancelling provider selection creates no configuration or secret prompt", async () => {
     const { run, config_path, connections } = await fixture();
-    const result = await run(["account", "add", "sample"], {
+    const result = await run(["auth", "add", "sample"], {
       is_interactive: true,
       selection_error: new AppError("cancelled", "Operation cancelled."),
     });

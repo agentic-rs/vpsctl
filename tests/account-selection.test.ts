@@ -163,12 +163,12 @@ describe("guided account selection", () => {
     }
   });
 
-  test("routes catalog, account metadata, and confirmed mutations through the selected account", async () => {
+  test("routes discovery, account metadata, and confirmed mutations through the selected account", async () => {
     const { run, addAccounts, calls } = await fixture();
     await addAccounts();
     for (const argv of [
-      ["catalog", "regions"],
-      ["account", "info"],
+      ["spec", "list", "region"],
+      ["auth", "get"],
       ["instance", "stop", "vm-1", "--yes"],
     ]) {
       const result = await run(argv, { selected_id: work_id });
@@ -231,7 +231,7 @@ describe("guided account selection", () => {
     await addAccounts();
     for (const argv of [
       ["instance", "list", "--all-accounts"],
-      ["account", "info", "--all-accounts", "--json"],
+      ["auth", "get", "--all-accounts", "--json"],
     ]) {
       const result = await run(argv, {
         select_error: new AppError("cancelled", "Picker must not open."),

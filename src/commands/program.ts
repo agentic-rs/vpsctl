@@ -8,8 +8,7 @@ import {
 import { AppError } from "../core/errors.ts";
 import type { InstanceAction, Provider } from "../core/provider.ts";
 import { ProviderRegistry } from "../core/registry.ts";
-import { registerAccountCommands } from "./accounts.ts";
-import { registerCatalogCommands } from "./catalog.ts";
+import { registerAuthCommands } from "./auth.ts";
 import { CliCommand } from "./command.ts";
 import type {
   CliOptions,
@@ -17,11 +16,13 @@ import type {
   CommonOptions,
   Mutation,
 } from "./context.ts";
+import { registerCredentialCommands } from "./credential.ts";
 import { nonblank } from "./input.ts";
 import { registerInstanceCommands } from "./instances.ts";
 import { default_io } from "./io.ts";
-import { registerLoginCommand } from "./login.ts";
 import { render } from "./output.ts";
+import { registerProviderCommands } from "./provider.ts";
+import { registerSpecCommands } from "./spec.ts";
 
 export type { CliIO, CliOptions } from "./context.ts";
 
@@ -185,9 +186,10 @@ export async function runCli(
       exit_code = code;
     },
   };
-  registerAccountCommands(program, context);
-  registerLoginCommand(program, context);
-  registerCatalogCommands(program, context);
+  registerAuthCommands(program, context);
+  registerProviderCommands(program, context);
+  registerSpecCommands(program, context);
+  registerCredentialCommands(program, context);
   registerInstanceCommands(program, context);
 
   try {

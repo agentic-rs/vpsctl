@@ -53,7 +53,7 @@ async function verifyIdentity(
     if (!provider.getAccountMetadata) {
       throw new AppError(
         "unsupported_operation",
-        `Provider '${provider_id}' cannot derive an account ID. Supply an explicit ID with login NAME.`,
+        `Provider '${provider_id}' cannot derive an account ID. Supply an explicit ID with auth login NAME.`,
       );
     }
     const metadata = await provider.getAccountMetadata(options);
@@ -103,7 +103,7 @@ export function registerLoginCommand(
       !flags.json &&
       !flags.credentials_stdin &&
       flags.credential.length === 0;
-    if (guided) io.intro?.("Connect a VPS account");
+    if (guided) io.intro?.("Connect a provider account");
     const definition = await resolveProvider(context, {
       provider_id: flags.provider,
       account_id: supplied_id,
@@ -152,7 +152,7 @@ export function registerLoginCommand(
       io.outro("Your account is ready.");
       return;
     }
-    print(login, "login", {
+    print(login, "auth.login", {
       id: account.id,
       provider_id,
       status: "authenticated",

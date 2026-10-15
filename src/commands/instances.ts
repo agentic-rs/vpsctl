@@ -66,7 +66,7 @@ export function registerInstanceCommands(
         );
       }
       if (results.length === 0)
-        io.write_out("No accounts configured. Run 'account add'.\n");
+        io.write_out("No accounts configured. Run 'auth login'.\n");
     }
   });
   const get = instances
@@ -84,9 +84,12 @@ export function registerInstanceCommands(
       .alias("buy")
       .description("Provision a new billable instance")
       .option("--region <id>", "Region; required by Vultr, optional on RunPod")
-      .option("--plan <id>", "Vultr plan or RunPod GPU type from catalog plans")
+      .option(
+        "--plan <id>",
+        "Vultr plan or RunPod GPU type from spec list plan",
+      )
       .option("--image <id>", "Vultr OS ID or GPU provider Docker image")
-      .option("--offer <id>", "Vast.ai offer ID from catalog offers")
+      .option("--offer <id>", "Vast.ai offer ID from spec list offer")
       .option("--gpu-count <count>", "RunPod GPU count", positiveInteger)
       .option(
         "--disk-gb <size>",

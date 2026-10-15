@@ -236,7 +236,7 @@ afterEach(async () => {
 describe("verified account login", () => {
   test("derives an omitted ID from verified metadata without asking for an account name", async () => {
     const { run, store, list_calls, metadata_calls, state } = await fixture();
-    const result = await run(["login", "--json"], {
+    const result = await run(["auth", "login", "--json"], {
       is_interactive: true,
       secret_input: "named-login-test-key",
       guided_ui: true,
@@ -255,9 +255,12 @@ describe("verified account login", () => {
 
   test("derives an omitted ID noninteractively from piped credentials", async () => {
     const { run, store, metadata_calls, state } = await fixture();
-    const result = await run(["login", "--credentials-stdin", "--json"], {
-      stdin_input: JSON.stringify({ api_key: "piped-derived-id-key" }),
-    });
+    const result = await run(
+      ["auth", "login", "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "piped-derived-id-key" }),
+      },
+    );
     expect(result.exit_code).toBe(0);
     expect(result.text_prompts).toEqual([]);
     expect(result.secret_prompts).toEqual([]);
@@ -271,7 +274,7 @@ describe("verified account login", () => {
   test("guides interactive login through provider selection and safe progress", async () => {
     const { run, store, connections, metadata_calls, state } = await fixture();
     const secret = "guided-provider-login-key";
-    const result = await run(["login"], {
+    const result = await run(["auth", "login"], {
       is_interactive: true,
       select_input: "other",
       secret_input: secret,
@@ -300,12 +303,15 @@ describe("verified account login", () => {
   test("uses the chosen provider for interactive environment credential references", async () => {
     const { run, store, connections, metadata_calls, state } = await fixture();
     const secret = "environment-provider-key";
-    const result = await run(["login", "--credential", "api_key=OTHER_TOKEN"], {
-      is_interactive: true,
-      select_input: "other",
-      env: { OTHER_TOKEN: secret },
-      guided_ui: true,
-    });
+    const result = await run(
+      ["auth", "login", "--credential", "api_key=OTHER_TOKEN"],
+      {
+        is_interactive: true,
+        select_input: "other",
+        env: { OTHER_TOKEN: secret },
+        guided_ui: true,
+      },
+    );
     expect(result.exit_code).toBe(0);
     expect(result.select_prompts).toHaveLength(1);
     expect(result.select_prompts[0]?.message).toBe("Choose a provider");
@@ -328,14 +334,23 @@ describe("verified account login", () => {
   test("does not ask for a provider when it is explicit or the input is scripted", async () => {
     const { run } = await fixture();
     for (const { argv, is_interactive } of [
-      { argv: ["login", "named", "--provider", "other"], is_interactive: true },
-      { argv: ["login", "--credentials-stdin"], is_interactive: true },
       {
-        argv: ["login", "--credential", "api_key=VULTR_TOKEN", "--json"],
+        argv: ["auth", "login", "named", "--provider", "other"],
+        is_interactive: true,
+      },
+      { argv: ["auth", "login", "--credentials-stdin"], is_interactive: true },
+      {
+        argv: [
+          "auth",
+          "login",
+          "--credential",
+          "api_key=VULTR_TOKEN",
+          "--json",
+        ],
         is_interactive: true,
       },
       {
-        argv: ["login", "--credential", "api_key=VULTR_TOKEN"],
+        argv: ["auth", "login", "--credential", "api_key=VULTR_TOKEN"],
         is_interactive: false,
       },
     ]) {
@@ -355,7 +370,7 @@ describe("verified account login", () => {
     const { run, store, state, connections } = await fixture();
     await store.add(account("existing", "other"));
     for (const id of ["existing", `other:${state.email}`]) {
-      const result = await run(["login", id], {
+      const result = await run(["auth", "login", id], {
         is_interactive: true,
         select_input: "must-not-select-provider",
         secret_input: "inferred-provider-key",
@@ -379,16 +394,19 @@ describe("verified account login", () => {
   test("requires metadata for derived IDs while preserving aliases for providers without it", async () => {
     const { run, config_path, store, state, metadata_calls } = await fixture();
     state.metadata_supported = false;
-    const derived = await run(["login", "--credentials-stdin", "--json"], {
-      stdin_input: JSON.stringify({ api_key: "unsupported-metadata-key" }),
-    });
+    const derived = await run(
+      ["auth", "login", "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "unsupported-metadata-key" }),
+      },
+    );
     expect(derived.exit_code).toBe(1);
     expect(JSON.parse(derived.stderr).error.code).toBe("unsupported_operation");
     expect(await Bun.file(config_path).exists()).toBe(false);
     expect(derived.stdout).toBe("");
     expect(derived.stderr).not.toContain("unsupported-metadata-key");
     const alias = await run(
-      ["login", "work", "--credentials-stdin", "--json"],
+      ["auth", "login", "work", "--credentials-stdin", "--json"],
       {
         stdin_input: JSON.stringify({ api_key: "supported-alias-key" }),
       },
@@ -401,7 +419,7 @@ describe("verified account login", () => {
   test("does not save an automatic account after metadata, email, or inventory verification fails", async () => {
     const { run, state, config_path } = await fixture();
     const attempt = () =>
-      run(["login", "--credentials-stdin", "--json"], {
+      run(["auth", "login", "--credentials-stdin", "--json"], {
         stdin_input: JSON.stringify({ api_key: "failed-automatic-login-key" }),
       });
     state.metadata_error = new AppError("authentication", "Metadata denied.");
@@ -434,18 +452,24 @@ describe("verified account login", () => {
     await store.use(id);
     const original = await readFile(config_path, "utf8");
     state.email = "someone.else@example.com";
-    const rejected = await run(["login", id, "--credentials-stdin", "--json"], {
-      stdin_input: JSON.stringify({ api_key: "different-account-key" }),
-    });
+    const rejected = await run(
+      ["auth", "login", id, "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "different-account-key" }),
+      },
+    );
     expect(rejected.exit_code).toBe(1);
     expect(metadata_calls).toEqual(["vultr"]);
     expect(await readFile(config_path, "utf8")).toBe(original);
     expect(rejected.stdout).toBe("");
     expect(rejected.stderr).not.toContain("different-account-key");
     state.email = "expected@example.com";
-    const matching = await run(["login", id, "--credentials-stdin", "--json"], {
-      stdin_input: JSON.stringify({ api_key: "matching-account-key" }),
-    });
+    const matching = await run(
+      ["auth", "login", id, "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "matching-account-key" }),
+      },
+    );
     expect(matching.exit_code).toBe(0);
     expect((await store.read()).accounts[0]?.credentials.api_key).toEqual({
       source: "literal",
@@ -458,7 +482,7 @@ describe("verified account login", () => {
     const { run, store, state, connections } = await fixture();
     const id = `other:${state.email}`;
     const conflicting = await run(
-      ["login", id, "--provider", "vultr", "--json"],
+      ["auth", "login", id, "--provider", "vultr", "--json"],
       {
         is_interactive: true,
         secret_input: "must-not-read-key",
@@ -467,7 +491,7 @@ describe("verified account login", () => {
     expect(conflicting.exit_code).toBe(1);
     expect(conflicting.secret_prompts).toEqual([]);
     expect(connections).toEqual([]);
-    const matching = await run(["login", id, "--json"], {
+    const matching = await run(["auth", "login", id, "--json"], {
       is_interactive: true,
       secret_input: "canonical-other-provider-key",
     });
@@ -489,9 +513,12 @@ describe("verified account login", () => {
     await store.add(account(id));
     await store.add(unrelated);
     await store.use(id);
-    const result = await run(["login", "--credentials-stdin", "--json"], {
-      stdin_input: JSON.stringify({ api_key: "renewed-derived-account-key" }),
-    });
+    const result = await run(
+      ["auth", "login", "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "renewed-derived-account-key" }),
+      },
+    );
     expect(result.exit_code).toBe(0);
     expect(await store.read()).toEqual({
       version: 1,
@@ -514,7 +541,7 @@ describe("verified account login", () => {
 
   test("cancelled provider selection stops before reading secrets or creating configuration", async () => {
     const { run, config_path, connections } = await fixture();
-    const result = await run(["login"], {
+    const result = await run(["auth", "login"], {
       is_interactive: true,
       guided_ui: true,
       select_error: new AppError("cancelled", "Operation cancelled."),
@@ -533,7 +560,7 @@ describe("verified account login", () => {
         new AppError("cancelled", "Operation cancelled."),
       );
     };
-    const result = await run(["login", "--provider", "vultr"], {
+    const result = await run(["auth", "login", "--provider", "vultr"], {
       is_interactive: true,
       guided_ui: true,
       secret_input: "cancelled-verification-key",
@@ -557,7 +584,7 @@ describe("verified account login", () => {
     state.before_list = async () => {
       expect(await Bun.file(config_path).exists()).toBe(false);
     };
-    const result = await run(["login", "personal", "--json"], {
+    const result = await run(["auth", "login", "personal", "--json"], {
       is_interactive: true,
       secret_input: secret,
     });
@@ -571,7 +598,7 @@ describe("verified account login", () => {
     ]);
     expect(list_calls).toEqual(["vultr"]);
     expect(JSON.parse(result.stdout)).toEqual({
-      action: "login",
+      action: "auth.login",
       data: {
         id: "personal",
         provider_id: "vultr",
@@ -592,11 +619,11 @@ describe("verified account login", () => {
         },
       ],
     });
-    const list_result = await run(["account", "list", "--json"]);
+    const list_result = await run(["auth", "list", "--json"]);
     expect(JSON.parse(list_result.stdout).data[0].credentials).toEqual({
       api_key: { source: "literal", value: "[redacted]" },
     });
-    const human_list = await run(["account", "list"]);
+    const human_list = await run(["auth", "list"]);
     expect(human_list.exit_code).toBe(0);
     for (const output of [list_result, human_list]) {
       expect(output.stdout).not.toContain(secret);
@@ -607,7 +634,14 @@ describe("verified account login", () => {
   test("verifies environment references while saving only the reference", async () => {
     const { run, config_path, store, connections } = await fixture();
     const result = await run(
-      ["login", "work", "--credential", "api_key=WORK_API_KEY", "--json"],
+      [
+        "auth",
+        "login",
+        "work",
+        "--credential",
+        "api_key=WORK_API_KEY",
+        "--json",
+      ],
       { env: { WORK_API_KEY: "environment-login-test-key" } },
     );
     expect(result.exit_code).toBe(0);
@@ -633,6 +667,7 @@ describe("verified account login", () => {
     state.instances = [];
     const result = await run(
       [
+        "auth",
         "login",
         "empty",
         "--provider",
@@ -667,7 +702,7 @@ describe("verified account login", () => {
     state.before_list = async () => {
       expect(await readFile(config_path, "utf8")).toBe(original);
     };
-    const result = await run(["login", "work", "--json"], {
+    const result = await run(["auth", "login", "work", "--json"], {
       is_interactive: true,
       secret_input: "renewed-login-test-key",
     });
@@ -702,7 +737,7 @@ describe("verified account login", () => {
       401,
     );
     const attempt = () =>
-      run(["login", "work", "--json"], {
+      run(["auth", "login", "work", "--json"], {
         is_interactive: true,
         secret_input: "rejected-login-test-key",
       });
@@ -731,10 +766,10 @@ describe("verified account login", () => {
     await store.add(account("work"));
     const original = await readFile(config_path, "utf8");
     for (const argv of [
-      ["login", "../invalid"],
-      ["login", "a".repeat(65)],
-      ["login", "work", "--provider", "other"],
-      ["login", "new", "--provider", "missing"],
+      ["auth", "login", "../invalid"],
+      ["auth", "login", "a".repeat(65)],
+      ["auth", "login", "work", "--provider", "other"],
+      ["auth", "login", "new", "--provider", "missing"],
     ]) {
       const result = await run([...argv, "--json"], {
         is_interactive: true,
@@ -762,7 +797,7 @@ describe("verified account login", () => {
     ];
     for (const stdin_input of inputs) {
       const result = await run(
-        ["login", "work", "--credentials-stdin", "--json"],
+        ["auth", "login", "work", "--credentials-stdin", "--json"],
         { stdin_input },
       );
       expect(result.exit_code).toBe(1);
@@ -783,7 +818,7 @@ describe("verified account login", () => {
       ["--credential", "other=UNSET_API_KEY"],
       ["--credential", "api_key=invalid-name"],
     ]) {
-      const result = await run(["login", "work", ...flags, "--json"]);
+      const result = await run(["auth", "login", "work", ...flags, "--json"]);
       expect(result.exit_code).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.secret_prompts).toEqual([]);
@@ -795,7 +830,7 @@ describe("verified account login", () => {
 
   test("requires interactive input or an explicit credential source", async () => {
     const { run, config_path, connections } = await fixture();
-    const result = await run(["login", "work", "--json"]);
+    const result = await run(["auth", "login", "work", "--json"]);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toContain("interactive terminal");
     expect(result.secret_prompts).toEqual([]);
@@ -808,7 +843,7 @@ describe("verified account login", () => {
     await store.add(account("work"));
     const original = await readFile(config_path, "utf8");
     const cancelled = new AppError("cancelled", "Operation cancelled.");
-    const result = await run(["login", "work", "--json"], {
+    const result = await run(["auth", "login", "work", "--json"], {
       is_interactive: true,
       secret_error: cancelled,
     });

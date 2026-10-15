@@ -31,10 +31,10 @@ function errorCode(status_code: number, detail?: string): ErrorCode {
 function errorMessage(status_code: number, detail?: string): string {
   const summary = `Vultr rejected the request (HTTP ${status_code}).${detail ? ` ${detail}` : ""}`;
   if (isIpAccessError(status_code, detail)) {
-    return `${summary} Add the IP address reported by Vultr to this user's API Access Control as a single-host entry, then run login again.`;
+    return `${summary} Add the IP address reported by Vultr to this user's API Access Control as a single-host entry, then run auth login again.`;
   }
   if (status_code === 401) {
-    return `${summary} Use the complete active API key, not its ID or masked display value. For a new key, complete Finalize Key Generation in Vultr Console and check its expiration before running login again.`;
+    return `${summary} Use the complete active API key, not its ID or masked display value. For a new key, complete Finalize Key Generation in Vultr Console and check its expiration before running auth login again.`;
   }
   if (status_code === 403) {
     return `${summary} Check API access is enabled, the user's permissions allow this operation, and API Access Control allows your current outbound IP address.`;

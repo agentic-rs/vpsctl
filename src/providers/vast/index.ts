@@ -209,13 +209,13 @@ export class VastProvider implements Provider {
 
   async listRegions(): Promise<Region[]> {
     return unsupported(
-      "Vast.ai has no fixed region catalog. Use catalog offers to inspect available GPU offers.",
+      "Vast.ai has no fixed region catalog. Use spec list offer to inspect available GPU offers.",
     );
   }
 
   async listPlans(_region_id?: string): Promise<Plan[]> {
     return unsupported(
-      "Vast.ai uses marketplace offers. Use catalog offers instead of plans.",
+      "Vast.ai uses marketplace offers. Use spec list offer instead of plans.",
     );
   }
 

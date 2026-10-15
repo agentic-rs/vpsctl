@@ -319,8 +319,9 @@ describe("GPU provider CLI discovery and preflight", () => {
         const result = await run([
           "--account",
           "vast",
-          "catalog",
-          "offers",
+          "spec",
+          "list",
+          "offer",
           flag,
           value,
         ]);
@@ -517,6 +518,7 @@ describe("GPU provider CLI requests", () => {
     });
     for (const provider_id of ["runpod", "vast"]) {
       const result = await run([
+        "auth",
         "login",
         "--provider",
         provider_id,
@@ -735,8 +737,9 @@ describe("GPU provider CLI requests", () => {
     const result = await run([
       "--account",
       "vast",
-      "catalog",
-      "offers",
+      "spec",
+      "list",
+      "offer",
       "--gpu",
       "Example GPU",
       "--gpu-count",
@@ -750,7 +753,7 @@ describe("GPU provider CLI requests", () => {
     expect(JSON.parse(result.stdout)).toEqual({
       account_id: "vast",
       provider_id: "vast",
-      action: "catalog.offers",
+      action: "spec.list.offer",
       data: [
         {
           id: "101",
@@ -784,13 +787,14 @@ describe("GPU provider CLI requests", () => {
     expect(result.stdout).not.toContain(api_key);
   });
 
-  test("rejects excessive offer limits before connecting and unsupported catalogs before HTTP", async () => {
+  test("rejects excessive offer limits before connecting and unsupported offer searches before HTTP", async () => {
     const { run, requests, connections } = await fixture();
     const excessive = await run([
       "--account",
       "vast",
-      "catalog",
-      "offers",
+      "spec",
+      "list",
+      "offer",
       "--limit",
       "101",
     ]);
@@ -798,7 +802,13 @@ describe("GPU provider CLI requests", () => {
     expect(JSON.parse(excessive.stderr).error.code).toBe("invalid_input");
     expect(connections).toEqual([]);
     for (const provider_id of ["runpod", "vultr"]) {
-      const result = await run(["--account", provider_id, "catalog", "offers"]);
+      const result = await run([
+        "--account",
+        provider_id,
+        "spec",
+        "list",
+        "offer",
+      ]);
       expect(result.exit_code).toBe(1);
       expect(JSON.parse(result.stderr).error.code).toBe(
         "unsupported_operation",

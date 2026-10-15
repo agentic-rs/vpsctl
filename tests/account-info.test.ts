@@ -162,11 +162,11 @@ describe("selected account metadata", () => {
   test("queries the default account and preserves signed fractional amounts", async () => {
     const { run, addAccounts, calls } = await fixture();
     await addAccounts();
-    const result = await run(["account", "info", "--json"]);
+    const result = await run(["auth", "get", "--json"]);
     expect(result.exit_code).toBe(0);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual({
-      action: "account.info",
+      action: "auth.get",
       account_id: "work",
       provider_id: "vultr",
       data: work_metadata,
@@ -184,9 +184,9 @@ describe("selected account metadata", () => {
     const { run, addAccounts, connections } = await fixture();
     await addAccounts();
     const env = { ...credentials, VPS_CTL_ACCOUNT: "personal" };
-    const selected = await run(["account", "info", "--json"], env);
+    const selected = await run(["auth", "get", "--json"], env);
     const overridden = await run(
-      ["account", "info", "--account", "work", "--json"],
+      ["auth", "get", "--account", "work", "--json"],
       env,
     );
     expect(selected.exit_code).toBe(0);
@@ -208,7 +208,7 @@ describe("selected account metadata", () => {
   test("renders identity and balance as readable key-value fields", async () => {
     const { run, addAccounts } = await fixture();
     await addAccounts();
-    const result = await run(["account", "info"]);
+    const result = await run(["auth", "get"]);
     expect(result.exit_code).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Account: work (vultr)\n");
@@ -223,7 +223,7 @@ describe("selected account metadata", () => {
   test("reports unsupported providers without invoking another provider operation", async () => {
     const { run, store, calls } = await fixture();
     await store.add(account("old", "WORK_TOKEN", "legacy"));
-    const result = await run(["account", "info", "--account", "old", "--json"]);
+    const result = await run(["auth", "get", "--account", "old", "--json"]);
     expect(result.exit_code).toBe(1);
     expect(result.stdout).toBe("");
     expect(JSON.parse(result.stderr)).toEqual({
@@ -242,7 +242,7 @@ describe("selected account metadata", () => {
       credentials.WORK_TOKEN,
       new AppError("forbidden", "Account metadata access denied."),
     );
-    const result = await run(["account", "info", "--json"]);
+    const result = await run(["auth", "get", "--json"]);
     expect(result.exit_code).toBe(1);
     expect(result.stdout).toBe("");
     expect(JSON.parse(result.stderr)).toEqual({
@@ -257,7 +257,7 @@ describe("selected account metadata", () => {
     const { run, addAccounts, connections } = await fixture();
     await addAccounts();
     const result = await run(
-      ["account", "info", "--account", "personal", "--json"],
+      ["auth", "get", "--account", "personal", "--json"],
       { PERSONAL_TOKEN: credentials.PERSONAL_TOKEN },
     );
     expect(result.exit_code).toBe(0);
@@ -272,11 +272,11 @@ describe("metadata across accounts", () => {
   test("retains each account's identity, metadata, and precise amounts in JSON", async () => {
     const { run, addAccounts, calls } = await fixture();
     await addAccounts();
-    const result = await run(["account", "info", "--all-accounts", "--json"]);
+    const result = await run(["auth", "get", "--all-accounts", "--json"]);
     expect(result.exit_code).toBe(0);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual({
-      action: "account.info",
+      action: "auth.get",
       data: [
         { account_id: "work", provider_id: "vultr", metadata: work_metadata },
         {
@@ -299,7 +299,7 @@ describe("metadata across accounts", () => {
   test("renders separate readable metadata blocks for each account", async () => {
     const { run, addAccounts } = await fixture();
     await addAccounts();
-    const result = await run(["account", "info", "--all-accounts"]);
+    const result = await run(["auth", "get", "--all-accounts"]);
     expect(result.exit_code).toBe(0);
     expect(result.stderr).toBe("");
     const [work_output, personal_output] = result.stdout.split(
@@ -320,11 +320,11 @@ describe("metadata across accounts", () => {
       credentials.WORK_TOKEN,
       new AppError("network_error", "Provider temporarily unavailable."),
     );
-    const result = await run(["account", "info", "--all-accounts", "--json"]);
+    const result = await run(["auth", "get", "--all-accounts", "--json"]);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual({
-      action: "account.info",
+      action: "auth.get",
       data: [
         {
           account_id: "work",
@@ -348,7 +348,7 @@ describe("metadata across accounts", () => {
       credentials.WORK_TOKEN,
       new AppError("forbidden", "Billing permission required."),
     );
-    const result = await run(["account", "info", "--all-accounts"]);
+    const result = await run(["auth", "get", "--all-accounts"]);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain(
@@ -362,11 +362,11 @@ describe("metadata across accounts", () => {
     const { run, store, calls } = await fixture();
     await store.add(account("old", "WORK_TOKEN", "legacy"));
     await store.add(account("personal", "PERSONAL_TOKEN"));
-    const result = await run(["account", "info", "--all-accounts", "--json"]);
+    const result = await run(["auth", "get", "--all-accounts", "--json"]);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual({
-      action: "account.info",
+      action: "auth.get",
       data: [
         {
           account_id: "old",
@@ -388,7 +388,7 @@ describe("metadata across accounts", () => {
   test("continues when one account's credential cannot be resolved", async () => {
     const { run, addAccounts, connections } = await fixture();
     await addAccounts();
-    const result = await run(["account", "info", "--all-accounts", "--json"], {
+    const result = await run(["auth", "get", "--all-accounts", "--json"], {
       PERSONAL_TOKEN: credentials.PERSONAL_TOKEN,
     });
     expect(result.exit_code).toBe(1);
@@ -415,10 +415,10 @@ describe("metadata across accounts", () => {
     await addAccounts();
     for (const result of [
       await run(
-        ["account", "info", "--all-accounts", "--account", "work", "--json"],
+        ["auth", "get", "--all-accounts", "--account", "work", "--json"],
         {},
       ),
-      await run(["account", "info", "--all-accounts", "--json"], {
+      await run(["auth", "get", "--all-accounts", "--json"], {
         VPS_CTL_ACCOUNT: "personal",
       }),
     ]) {
@@ -439,14 +439,14 @@ describe("metadata across accounts", () => {
   test("returns empty results and a helpful human message without configured accounts or keys", async () => {
     const { run, connections, calls } = await fixture();
     const json_result = await run(
-      ["account", "info", "--all-accounts", "--json"],
+      ["auth", "get", "--all-accounts", "--json"],
       {},
     );
-    const human_result = await run(["account", "info", "--all-accounts"], {});
+    const human_result = await run(["auth", "get", "--all-accounts"], {});
     expect(json_result.exit_code).toBe(0);
     expect(json_result.stderr).toBe("");
     expect(JSON.parse(json_result.stdout)).toEqual({
-      action: "account.info",
+      action: "auth.get",
       data: [],
     });
     expect(human_result.exit_code).toBe(0);

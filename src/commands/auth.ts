@@ -8,6 +8,7 @@ import {
   readCredentials,
   withCredentialOptions,
 } from "./credentials.ts";
+import { registerLoginCommand } from "./login.ts";
 import { render } from "./output.ts";
 import { resolveProvider } from "./providers.ts";
 import { queryAllAccounts } from "./query.ts";
@@ -22,53 +23,34 @@ async function accountMetadata(provider: Provider): Promise<AccountMetadata> {
   return provider.getAccountMetadata();
 }
 
-export function registerAccountCommands(
+export function registerAuthCommands(
   program: CliCommand,
   context: CommandContext,
 ): void {
   const { registry, io, print, storeFor, readProvider } = context;
-  const provider_group = program
-    .command("provider")
-    .description("Inspect registered providers");
-  const provider_list = provider_group
-    .command("list")
-    .description("List providers and capabilities");
-  provider_list.action(() =>
-    print(
-      provider_list,
-      "provider.list",
-      registry
-        .list()
-        .map(({ info, credential_fields }) => ({ ...info, credential_fields })),
-    ),
-  );
-
-  const accounts = program
-    .command("account")
-    .description("Manage named accounts and query provider metadata");
-  const account_info = accounts
-    .command("info")
+  const auth = program
+    .command("auth")
+    .description("Authenticate and manage local provider accounts");
+  registerLoginCommand(auth, context);
+  const get = auth
+    .command("get")
     .description(
       "Query identity, balance, pending charges, and payment metadata",
     )
     .option("--all-accounts", "Query metadata across all configured accounts");
-  account_info.action(async () => {
-    const flags = account_info.optsWithGlobals<
+  get.action(async () => {
+    const flags = get.optsWithGlobals<
       CommonOptions & { all_accounts?: boolean }
     >();
     if (!flags.all_accounts) {
-      await readProvider(account_info, "account.info", accountMetadata);
+      await readProvider(get, "auth.get", accountMetadata);
       return;
     }
-    const results = await queryAllAccounts(
-      account_info,
-      context,
-      accountMetadata,
-    );
+    const results = await queryAllAccounts(get, context, accountMetadata);
     if (flags.json) {
       print(
-        account_info,
-        "account.info",
+        get,
+        "auth.get",
         results.map((result) =>
           "data" in result
             ? {
@@ -88,16 +70,16 @@ export function registerAccountCommands(
       );
     }
     if (results.length === 0)
-      io.write_out("No accounts configured. Run 'login'.\n");
+      io.write_out("No accounts configured. Run 'auth login'.\n");
   });
-  const account_list = accounts
+  const list = auth
     .command("list")
     .description("List accounts without reading credentials");
-  account_list.action(async () => {
-    const config = await storeFor(account_list).read();
+  list.action(async () => {
+    const config = await storeFor(list).read();
     print(
-      account_list,
-      "account.list",
+      list,
+      "auth.list",
       config.accounts.map((account) => ({
         id: account.id,
         provider_id: account.provider_id,
@@ -113,8 +95,8 @@ export function registerAccountCommands(
       })),
     );
   });
-  const account_add = withCredentialOptions(
-    accounts
+  const add = withCredentialOptions(
+    auth
       .command("add <id>")
       .description("Register an account; prompts for credentials by default")
       .option(
@@ -122,9 +104,9 @@ export function registerAccountCommands(
         "Provider ID (choose interactively if omitted)",
       ),
   );
-  account_add.action(async (id: string) => {
+  add.action(async (id: string) => {
     validateAccountId(id);
-    const flags = account_add.optsWithGlobals<
+    const flags = add.optsWithGlobals<
       CredentialOptions & CommonOptions & { provider?: string }
     >();
     const definition = await resolveProvider(context, {
@@ -138,23 +120,21 @@ export function registerAccountCommands(
       credentials: await readCredentials(definition, io, flags),
     };
     registry.validateAccount(account);
-    await storeFor(account_add).add(account);
-    print(account_add, "account.add", { id, provider_id: account.provider_id });
+    await storeFor(add).add(account);
+    print(add, "auth.add", { id, provider_id: account.provider_id });
   });
-  const account_use = accounts
-    .command("use <id>")
-    .description("Set the default account");
-  account_use.action(async (id: string) => {
-    await storeFor(account_use).use(id);
-    print(account_use, "account.use", { default_account_id: id });
+  const use = auth.command("use <id>").description("Set the default account");
+  use.action(async (id: string) => {
+    await storeFor(use).use(id);
+    print(use, "auth.use", { default_account_id: id });
   });
-  const account_remove = accounts
+  const remove = auth
     .command("remove <id>")
     .description(
-      "Remove a local account reference; VPS resources are unaffected",
+      "Remove a local account reference; Provider resources are unaffected",
     );
-  account_remove.action(async (id: string) => {
-    await storeFor(account_remove).remove(id);
-    print(account_remove, "account.remove", { removed_account_id: id });
+  remove.action(async (id: string) => {
+    await storeFor(remove).remove(id);
+    print(remove, "auth.remove", { removed_account_id: id });
   });
 }
