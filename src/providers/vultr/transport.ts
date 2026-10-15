@@ -20,6 +20,42 @@ function errorCode(status_code: number): ErrorCode {
   return "provider_error";
 }
 
+function errorMessage(status_code: number, detail?: string): string {
+  const summary = `Vultr rejected the request (HTTP ${status_code}).${detail ? ` ${detail}` : ""}`;
+  if (status_code === 401) {
+    return `${summary} Use the complete active API key, not its ID or masked display value. For a new key, complete Finalize Key Generation in Vultr Console and check its expiration before running login again.`;
+  }
+  if (status_code === 403) {
+    return `${summary} Check API access is enabled, the user's permissions allow this operation, and API Access Control allows your current outbound IP address.`;
+  }
+  return summary;
+}
+
+async function errorDetail(
+  response: Response,
+  api_key: string,
+): Promise<string | undefined> {
+  try {
+    const value: unknown = await response.json();
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !("error" in value) ||
+      typeof value.error !== "string"
+    ) {
+      return undefined;
+    }
+    return value.error
+      .replaceAll(api_key, "[redacted]")
+      .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+      .replace(/\p{C}/gu, " ")
+      .slice(0, 500)
+      .trim();
+  } catch {
+    return undefined;
+  }
+}
+
 export class VultrTransport {
   #api_key: string;
   #fetch: (request: Request) => Promise<Response>;
@@ -94,9 +130,10 @@ export class VultrTransport {
 
       if (!response.ok) {
         const advice = response.status >= 500 ? retry_advice : "";
+        const detail = await errorDetail(response, this.#api_key);
         throw new AppError(
           errorCode(response.status),
-          `Vultr rejected the request (HTTP ${response.status}).${advice}`,
+          `${errorMessage(response.status, detail)}${advice}`,
           response.status,
         );
       }

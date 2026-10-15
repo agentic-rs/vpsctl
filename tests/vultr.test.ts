@@ -349,6 +349,91 @@ describe("Vultr validation and errors", () => {
     },
   );
 
+  test("includes Vultr's authentication reason in an HTTP 401 error", async () => {
+    const { provider, requests } = harness([
+      json({ error: "The API key has expired." }, 401),
+    ]);
+    const error = await provider
+      .listInstances()
+      .catch((error: unknown) => error);
+
+    expect(error).toBeInstanceOf(AppError);
+    expect(error).toMatchObject({ code: "authentication", status_code: 401 });
+    expect(String(error)).toContain("The API key has expired.");
+    expect(requests).toHaveLength(1);
+  });
+
+  test("redacts credentials echoed in provider error details", async () => {
+    const other_token = "another-sensitive-bearer-token";
+    const { provider } = harness([
+      json(
+        {
+          error: `Rejected ${api_key}; Authorization: Bearer ${api_key}; fallback Bearer ${other_token}`,
+          private_metadata: "unrelated-private-provider-field",
+        },
+        401,
+      ),
+    ]);
+    const error = await provider
+      .listInstances()
+      .catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ code: "authentication", status_code: 401 });
+    expect(String(error)).toContain("Rejected");
+    expect(String(error)).not.toContain(api_key);
+    expect(String(error)).not.toContain(other_token);
+    expect(String(error)).not.toContain("unrelated-private-provider-field");
+  });
+
+  test.each([
+    ["non-JSON", "<html>private-provider-page</html>"],
+    ["malformed JSON", '{"error":"private-provider-page"'],
+    [
+      "absent error field",
+      JSON.stringify({ message: "private-provider-page" }),
+    ],
+    [
+      "non-string error field",
+      JSON.stringify({ error: { secret: "private-provider-page" } }),
+    ],
+    ["empty error field", JSON.stringify({ error: "" })],
+    ["JSON array", JSON.stringify([{ error: "private-provider-page" }])],
+    ["JSON null", "null"],
+  ])(
+    "retains HTTP error identity for %s bodies",
+    async (_description, body) => {
+      const { provider } = harness([new Response(body, { status: 401 })]);
+      const error = await provider
+        .listInstances()
+        .catch((error: unknown) => error);
+
+      expect(error).toBeInstanceOf(AppError);
+      expect(error).toMatchObject({ code: "authentication", status_code: 401 });
+      expect(String(error)).toContain("HTTP 401");
+      expect(String(error)).not.toContain("private-provider-page");
+    },
+  );
+
+  test("keeps provider error details bounded and safe for terminal output", async () => {
+    const { provider } = harness([
+      json({ error: `Denied\n\r\t\u001b[31m ${"x".repeat(5_000)}` }, 403),
+    ]);
+    const error = await provider
+      .listInstances()
+      .catch((error: unknown) => error);
+
+    expect(error).toBeInstanceOf(AppError);
+    expect(error).toMatchObject({ code: "forbidden", status_code: 403 });
+    expect(String(error)).toContain("Denied");
+    expect(
+      Array.from(String(error)).every((character) => {
+        const code = character.charCodeAt(0);
+        return code >= 32 && code !== 127;
+      }),
+    ).toBe(true);
+    expect(String(error).length).toBeLessThan(1_000);
+  });
+
   test("rejects malformed provider data and invalid JSON", async () => {
     const { provider } = harness([
       json({ instance: { id: "incomplete" } }),

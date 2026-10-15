@@ -99,6 +99,16 @@ bun run dev account remove ci
 
 An environment reference is stored as `{"source":"env","name":"VULTR_CI_API_KEY"}`. Resolve it through your shell environment or a local `.env` file. Removing a local account leaves its VPS resources intact.
 
+## Login troubleshooting
+
+An HTTP `401` means Vultr rejected the credentials. Paste the complete API key value, rather than its name, ID, or masked display value, without quotes or a `Bearer` prefix. For a newly generated IAM key, complete **Finalize Key Generation** in the Vultr Console after copying it. Confirm the key is still active and has not expired, then run `bun run dev login NAME` again. Failed login attempts do not save the rejected key.
+
+HTTP errors include Vultr's JSON `error` message when available, with the supplied API key and Bearer credentials redacted. Other response fields and non-JSON bodies are omitted. Use that detail to distinguish credential rejection from permission or access-control failures.
+
+For HTTP `403`, check that API access is enabled, the user has permission to list instances, and the API access-control list allows your machine's current outbound IP address. Keep IP restrictions limited to the hosts that need access.
+
+See Vultr's [API key creation guide](https://docs.vultr.com/platform/iam/organizations/manage-user-api-access/how-to-create-an-api-key-for-a-user) and [user API access controls](https://docs.vultr.com/support/platform/users/how-can-i-manage-api-access-for-users).
+
 ## Development
 
 ```sh
