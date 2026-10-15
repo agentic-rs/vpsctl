@@ -8,22 +8,13 @@ import type { CliCommand } from "./command.ts";
 import type { CommandContext, CommonOptions } from "./context.ts";
 import { collect, instanceId, nonblank, summary } from "./input.ts";
 import { render } from "./output.ts";
+import { queryAllAccounts } from "./query.ts";
 
 export function registerInstanceCommands(
   program: CliCommand,
   context: CommandContext,
 ): void {
-  const {
-    env,
-    io,
-    registry,
-    print,
-    storeFor,
-    readProvider,
-    mutate,
-    mutationFlags,
-    setExitCode,
-  } = context;
+  const { io, print, readProvider, mutate, mutationFlags } = context;
   const instances = program
     .command("instance")
     .description("Create, inspect, and control VPS instances");
@@ -45,33 +36,18 @@ export function registerInstanceCommands(
       });
       return;
     }
-    if (flags.account || env.VPS_CTL_ACCOUNT) {
-      throw new AppError(
-        "invalid_input",
-        "--all-accounts cannot be combined with --account or VPS_CTL_ACCOUNT.",
-      );
-    }
-    const config = await storeFor(list).read();
-    const results = await Promise.all(
-      config.accounts.map(async (account) => {
-        try {
-          return {
-            account_id: account.id,
-            provider_id: account.provider_id,
-            instances: await registry.connect(account, env).listInstances(),
-          };
-        } catch (error) {
-          setExitCode(1);
-          return {
-            account_id: account.id,
-            provider_id: account.provider_id,
-            error:
-              error instanceof Error
-                ? error.message
-                : "Account request failed.",
-          };
-        }
-      }),
+    const results = (
+      await queryAllAccounts(list, context, (provider) =>
+        provider.listInstances(),
+      )
+    ).map((result) =>
+      "data" in result
+        ? {
+            account_id: result.account_id,
+            provider_id: result.provider_id,
+            instances: result.data,
+          }
+        : { ...result, instances: undefined },
     );
     if (flags.json) {
       print(list, "instance.list", results);

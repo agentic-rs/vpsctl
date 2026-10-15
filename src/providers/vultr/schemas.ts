@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AppError } from "../../core/errors.ts";
 import type {
+  AccountMetadata,
   CreateInstanceInput,
   EditInstanceInput,
   Image,
@@ -40,6 +41,16 @@ const edit_schema = z
     plan_id: identifier_schema.optional(),
   })
   .refine((input) => Object.values(input).some((value) => value !== undefined));
+
+export const account_schema = z.object({
+  name: z.string(),
+  email: z.string(),
+  balance: z.number(),
+  pending_charges: z.number(),
+  last_payment_date: z.string(),
+  last_payment_amount: z.number(),
+  acls: z.array(z.string()),
+});
 
 export const instance_schema = z.object({
   id: z.string().min(1),
@@ -198,6 +209,22 @@ export function normalizeInstance(
     public_ipv4: value.main_ip,
     public_ipv6: value.v6_main_ip,
     tags: value.tags,
+  };
+}
+
+export function normalizeAccountMetadata(
+  value: z.infer<typeof account_schema>,
+): AccountMetadata {
+  return {
+    provider_id: "vultr",
+    name: value.name,
+    email: value.email,
+    balance: value.balance,
+    pending_charges: value.pending_charges,
+    last_payment_date: value.last_payment_date,
+    last_payment_amount: value.last_payment_amount,
+    currency: "USD",
+    acls: value.acls,
   };
 }
 

@@ -1,17 +1,31 @@
 import { type Account, validateAccountId } from "../core/accounts.ts";
+import { AppError } from "../core/errors.ts";
+import type { AccountMetadata, Provider } from "../core/provider.ts";
 import type { CliCommand } from "./command.ts";
-import type { CommandContext } from "./context.ts";
+import type { CommandContext, CommonOptions } from "./context.ts";
 import {
   type CredentialOptions,
   readCredentials,
   withCredentialOptions,
 } from "./credentials.ts";
+import { render } from "./output.ts";
+import { queryAllAccounts } from "./query.ts";
+
+async function accountMetadata(provider: Provider): Promise<AccountMetadata> {
+  if (!provider.getAccountMetadata) {
+    throw new AppError(
+      "unsupported_operation",
+      `Provider '${provider.info.id}' does not support account metadata.`,
+    );
+  }
+  return provider.getAccountMetadata();
+}
 
 export function registerAccountCommands(
   program: CliCommand,
   context: CommandContext,
 ): void {
-  const { registry, io, print, storeFor } = context;
+  const { registry, io, print, storeFor, readProvider } = context;
   const provider_group = program
     .command("provider")
     .description("Inspect registered providers");
@@ -30,7 +44,51 @@ export function registerAccountCommands(
 
   const accounts = program
     .command("account")
-    .description("Manage local named accounts and credential references");
+    .description("Manage named accounts and query provider metadata");
+  const account_info = accounts
+    .command("info")
+    .description(
+      "Query identity, balance, pending charges, and payment metadata",
+    )
+    .option("--all-accounts", "Query metadata across all configured accounts");
+  account_info.action(async () => {
+    const flags = account_info.optsWithGlobals<
+      CommonOptions & { all_accounts?: boolean }
+    >();
+    if (!flags.all_accounts) {
+      await readProvider(account_info, "account.info", accountMetadata);
+      return;
+    }
+    const results = await queryAllAccounts(
+      account_info,
+      context,
+      accountMetadata,
+    );
+    if (flags.json) {
+      print(
+        account_info,
+        "account.info",
+        results.map((result) =>
+          "data" in result
+            ? {
+                account_id: result.account_id,
+                provider_id: result.provider_id,
+                metadata: result.data,
+              }
+            : result,
+        ),
+      );
+      return;
+    }
+    for (const result of results) {
+      io.write_out(`Account: ${result.account_id} (${result.provider_id})\n`);
+      io.write_out(
+        `${"data" in result ? render(result.data) : `Error: ${result.error}`}\n`,
+      );
+    }
+    if (results.length === 0)
+      io.write_out("No accounts configured. Run 'login'.\n");
+  });
   const account_list = accounts
     .command("list")
     .description("List accounts without reading credentials");

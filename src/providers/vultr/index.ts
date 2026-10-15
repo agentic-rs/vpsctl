@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AppError } from "../../core/errors.ts";
 import type {
+  AccountMetadata,
   CreateInstanceInput,
   EditInstanceInput,
   Image,
@@ -12,11 +13,13 @@ import type {
   SshKey,
 } from "../../core/provider.ts";
 import {
+  account_schema,
   createBody,
   editBody,
   identifier_schema,
   image_schema,
   instance_schema,
+  normalizeAccountMetadata,
   normalizeImage,
   normalizeInstance,
   normalizePlan,
@@ -48,6 +51,7 @@ export const vultr_info: ProviderInfo = {
     "plans",
     "images",
     "ssh_keys",
+    "account_metadata",
   ],
   operation_notes: {
     start: "Vultr may restart an already running instance.",
@@ -61,6 +65,15 @@ export class VultrProvider implements Provider {
 
   constructor(options: VultrOptions) {
     this.#transport = new VultrTransport(options);
+  }
+
+  async getAccountMetadata(): Promise<AccountMetadata> {
+    const response = await this.#transport.request("/account");
+    const result = validateResponse(
+      z.object({ account: account_schema }),
+      response,
+    );
+    return normalizeAccountMetadata(result.account);
   }
 
   async listInstances(): Promise<Instance[]> {

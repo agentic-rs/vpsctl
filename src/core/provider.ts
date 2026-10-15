@@ -51,6 +51,18 @@ export interface SshKey {
   name: string;
 }
 
+export interface AccountMetadata {
+  provider_id: string;
+  name: string;
+  email: string;
+  balance: number;
+  pending_charges: number;
+  last_payment_date: string;
+  last_payment_amount: number;
+  currency: string;
+  acls: string[];
+}
+
 export interface CreateInstanceInput {
   region_id: string;
   plan_id: string;
@@ -77,6 +89,7 @@ export interface ProviderInfo {
 
 export interface Provider {
   readonly info: ProviderInfo;
+  getAccountMetadata?(): Promise<AccountMetadata>;
   listInstances(): Promise<Instance[]>;
   getInstance(id: string): Promise<Instance>;
   createInstance(input: CreateInstanceInput): Promise<Instance>;

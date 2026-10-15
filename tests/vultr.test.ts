@@ -26,6 +26,21 @@ function instance(
   };
 }
 
+function account(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    name: "Test Account",
+    email: "admin@example.com",
+    balance: -100.55,
+    pending_charges: 60.25,
+    last_payment_date: "2020-10-10T01:56:20+00:00",
+    last_payment_amount: -1.25,
+    acls: ["subscriptions_view", "billing"],
+    ...overrides,
+  };
+}
+
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
@@ -52,6 +67,124 @@ const create_input = {
   plan_id: "vc2-1c-1gb",
   image_id: "1743",
 };
+
+describe("Vultr account metadata", () => {
+  test("fetches account metadata and only exposes documented fields", async () => {
+    const { provider, requests } = harness([
+      json({
+        account: account({
+          api_key: "private-api-key",
+          internal: { api_key: "nested-private-api-key" },
+        }),
+        credentials: { api_key: "envelope-private-api-key" },
+      }),
+    ]);
+
+    const result = await provider.getAccountMetadata();
+
+    expect(result).toEqual({
+      provider_id: "vultr",
+      name: "Test Account",
+      email: "admin@example.com",
+      balance: -100.55,
+      pending_charges: 60.25,
+      last_payment_date: "2020-10-10T01:56:20+00:00",
+      last_payment_amount: -1.25,
+      currency: "USD",
+      acls: ["subscriptions_view", "billing"],
+    });
+    expect(JSON.stringify(result)).not.toContain("private-api-key");
+    expect(provider.info.capabilities).toContain("account_metadata");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe("https://api.vultr.com/v2/account");
+    expect(requests[0]?.method).toBe("GET");
+    expect(requests[0]?.headers.get("authorization")).toBe(`Bearer ${api_key}`);
+    expect(await requests[0]?.text()).toBe("");
+  });
+
+  test("preserves signed financial amounts and fractional precision", async () => {
+    const { provider } = harness([
+      json({
+        account: account({
+          balance: -5519.11234567,
+          pending_charges: -0.001234567,
+          last_payment_amount: -1.000000001,
+        }),
+      }),
+    ]);
+
+    const result = await provider.getAccountMetadata();
+
+    expect(result.balance).toBe(-5519.11234567);
+    expect(result.pending_charges).toBe(-0.001234567);
+    expect(result.last_payment_amount).toBe(-1.000000001);
+  });
+
+  test("preserves negative zero and empty payment dates from the API", async () => {
+    const body = JSON.stringify({
+      account: account({
+        balance: 0,
+        pending_charges: 0,
+        last_payment_date: "",
+        last_payment_amount: 0,
+        acls: [],
+      }),
+    }).replace(/":0/g, '":-0');
+    const { provider } = harness([new Response(body)]);
+
+    const result = await provider.getAccountMetadata();
+
+    expect(Object.is(result.balance, -0)).toBe(true);
+    expect(Object.is(result.pending_charges, -0)).toBe(true);
+    expect(Object.is(result.last_payment_amount, -0)).toBe(true);
+    expect(result.last_payment_date).toBe("");
+    expect(result.acls).toEqual([]);
+  });
+
+  test.each([
+    ["missing envelope", { balance: -100.55 }],
+    ["missing account fields", { account: { name: "Incomplete" } }],
+    ["non-numeric balance", { account: account({ balance: "-100.55" }) }],
+    ["null pending charges", { account: account({ pending_charges: null }) }],
+    [
+      "invalid payment amount",
+      { account: account({ last_payment_amount: {} }) },
+    ],
+    ["invalid payment date", { account: account({ last_payment_date: null }) }],
+    ["invalid email", { account: account({ email: 42 }) }],
+    ["invalid permissions", { account: account({ acls: ["billing", 42] }) }],
+  ])("rejects %s", async (_description, response) => {
+    const { provider } = harness([json(response)]);
+    await expect(provider.getAccountMetadata()).rejects.toMatchObject({
+      code: "invalid_response",
+    });
+  });
+
+  test("rejects infinite amounts without exposing provider data", async () => {
+    const body = JSON.stringify({
+      account: account({ balance: "infinite", api_key: "private-api-key" }),
+    }).replace('"infinite"', "1e999");
+    const { provider } = harness([new Response(body)]);
+    const error = await provider
+      .getAccountMetadata()
+      .catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ code: "invalid_response" });
+    expect(String(error)).not.toContain("private-api-key");
+  });
+
+  test("propagates account permissions errors through the existing transport", async () => {
+    const { provider, requests } = harness([
+      json({ error: "API key lacks billing access." }, 403),
+    ]);
+
+    await expect(provider.getAccountMetadata()).rejects.toMatchObject({
+      code: "forbidden",
+      status_code: 403,
+    });
+    expect(requests).toHaveLength(1);
+  });
+});
 
 describe("Vultr instances", () => {
   test("normalizes instances and strips secrets from provider responses", async () => {

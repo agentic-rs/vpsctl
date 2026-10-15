@@ -19,6 +19,8 @@ bun run dev account list
 bun run dev instance list
 bun run dev --account work instance list
 bun run dev --json instance list --all-accounts
+bun run dev --account personal account info
+bun run dev --json account info --all-accounts
 ```
 
 API keys are entered with a masked prompt. Local account configuration stores them as plaintext with owner-only file permissions (`0600`). Account listings redact stored secrets. The configuration contains credentials, so keep it out of version control.
@@ -28,6 +30,12 @@ API keys are entered with a masked prompt. Local account configuration stores th
 `account add NAME --provider vultr` remains available for offline registration without verification. Both commands support `--credentials-stdin` and `--credential` environment references.
 
 Account selection follows `--account`, then `VPS_CTL_ACCOUNT`, then the saved default. Adding an account does not implicitly set the default. `--all-accounts` requires neither `--account` nor `VPS_CTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
+
+## Account metadata
+
+`account info` queries live provider metadata for the selected account. `account info --all-accounts` queries every configured account independently and retains successful results if another account fails. `account list` remains a local configuration listing without network requests.
+
+For Vultr, metadata includes name, email, balance, pending charges, last payment date and amount, USD currency, and account permissions (`acls`). Amounts retain the signed values reported by Vultr, without rounding or calculating an available balance. JSON output retains the full normalized record and associates each result with its local account name. Metadata is fetched on demand and is not saved into the account configuration. Providers that lack this capability report `unsupported_operation`.
 
 ## Discover and manage instances
 
@@ -135,4 +143,4 @@ tests/                   Account, CLI, and adapter tests
 
 Accounts and commands depend on the provider contract. Adapters can use HTTP, an SDK, or an existing CLI internally. To add a provider, implement `Provider`, supply a `ProviderDefinition`, and register it in `core/registry.ts`. The current registry is static; external plugin discovery, installation, and versioning are deferred until a second provider helps establish the shared contract.
 
-References: [Bun executables](https://bun.sh/docs/bundler/executables), [Vultr's official API client](https://github.com/vultr/govultr), [Vultr instance behavior](https://docs.vultr.com/reference/terraform/resources/instance), [Vultr stopped-instance billing](https://docs.vultr.com/support/platform/billing/are-stopped-instances-still-billed-on-vultr).
+References: [Bun executables](https://bun.sh/docs/bundler/executables), [Vultr's official API client](https://github.com/vultr/govultr), [Vultr account metadata](https://github.com/vultr/govultr/blob/master/account.go), [Vultr instance behavior](https://docs.vultr.com/reference/terraform/resources/instance), [Vultr stopped-instance billing](https://docs.vultr.com/support/platform/billing/are-stopped-instances-still-billed-on-vultr).

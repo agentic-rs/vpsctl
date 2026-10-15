@@ -1,4 +1,5 @@
 export type ErrorCode =
+  | "unsupported_operation"
   | "invalid_input"
   | "authentication"
   | "forbidden"
