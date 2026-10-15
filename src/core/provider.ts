@@ -21,7 +21,22 @@ export interface Instance {
   public_ipv4: string;
   public_ipv6: string;
   tags: string[];
+  gpu_name?: string;
+  gpu_count?: number;
+  gpu_memory_gb?: number;
+  hourly_cost?: number;
+  ssh_host?: string;
+  ssh_port?: number;
 }
+
+export interface AcceptedInstance {
+  provider_id: string;
+  id: string;
+  status: "accepted";
+  label?: string;
+}
+
+export type InstanceMutationResult = Instance | AcceptedInstance;
 
 export interface Region {
   id: string;
@@ -31,10 +46,15 @@ export interface Region {
 
 export interface Plan {
   id: string;
-  vcpu_count: number;
-  memory_mb: number;
-  disk_gb: number;
-  monthly_cost: number;
+  name?: string;
+  vcpu_count?: number;
+  memory_mb?: number;
+  disk_gb?: number;
+  monthly_cost?: number;
+  hourly_cost?: number;
+  gpu_name?: string;
+  gpu_count?: number;
+  gpu_memory_gb?: number;
   currency: string;
   region_ids: string[];
 }
@@ -53,14 +73,15 @@ export interface SshKey {
 
 export interface AccountMetadata {
   provider_id: string;
-  name: string;
   email: string;
-  balance: number;
-  pending_charges: number;
-  last_payment_date: string;
-  last_payment_amount: number;
   currency: string;
-  acls: string[];
+  name?: string;
+  balance?: number;
+  pending_charges?: number;
+  last_payment_date?: string;
+  last_payment_amount?: number;
+  hourly_cost?: number;
+  acls?: string[];
 }
 
 export interface ProviderRequestOptions {
@@ -68,9 +89,15 @@ export interface ProviderRequestOptions {
 }
 
 export interface CreateInstanceInput {
-  region_id: string;
-  plan_id: string;
-  image_id: string;
+  region_id?: string;
+  plan_id?: string;
+  image_id?: string;
+  offer_id?: string;
+  gpu_count?: number;
+  disk_gb?: number;
+  volume_gb?: number;
+  ports?: string[];
+  enable_ssh?: boolean;
   label?: string;
   hostname?: string;
   ssh_key_ids?: string[];
@@ -91,6 +118,27 @@ export interface ProviderInfo {
   operation_notes?: Partial<Record<InstanceAction, string>>;
 }
 
+export interface OfferQuery {
+  gpu_name?: string;
+  gpu_count?: number;
+  disk_gb?: number;
+  limit?: number;
+}
+
+export interface Offer {
+  id: string;
+  gpu_name: string;
+  gpu_count: number;
+  hourly_cost: number;
+  currency: string;
+  region_id?: string;
+  vcpu_count?: number;
+  memory_mb?: number;
+  disk_gb?: number;
+  gpu_memory_gb?: number;
+  reliability?: number;
+}
+
 export interface Provider {
   readonly info: ProviderInfo;
   getAccountMetadata?(
@@ -98,14 +146,18 @@ export interface Provider {
   ): Promise<AccountMetadata>;
   listInstances(options?: ProviderRequestOptions): Promise<Instance[]>;
   getInstance(id: string): Promise<Instance>;
-  createInstance(input: CreateInstanceInput): Promise<Instance>;
-  editInstance(id: string, input: EditInstanceInput): Promise<Instance>;
+  createInstance(input: CreateInstanceInput): Promise<InstanceMutationResult>;
+  editInstance(
+    id: string,
+    input: EditInstanceInput,
+  ): Promise<InstanceMutationResult>;
   destroyInstance(id: string): Promise<void>;
   startInstance(id: string): Promise<void>;
   stopInstance(id: string): Promise<void>;
   rebootInstance(id: string): Promise<void>;
   listRegions(): Promise<Region[]>;
   listPlans(region_id?: string): Promise<Plan[]>;
+  listOffers?(query?: OfferQuery): Promise<Offer[]>;
   listImages(): Promise<Image[]>;
   listSshKeys(): Promise<SshKey[]>;
 }
@@ -113,5 +165,8 @@ export interface Provider {
 export interface ProviderDefinition {
   info: ProviderInfo;
   credential_fields: readonly string[];
+  validateInstanceId?(id: string): void;
+  validateCreateInput?(input: CreateInstanceInput): void;
+  validateEditInput?(input: EditInstanceInput): void;
   create(credentials: Readonly<Record<string, string>>): Provider;
 }

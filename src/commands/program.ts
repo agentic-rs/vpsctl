@@ -35,7 +35,7 @@ export async function runCli(
   let exit_code = 0;
   const program = new CliCommand()
     .name("vps-ctl")
-    .description("Manage VPS instances across named provider accounts.")
+    .description("Manage compute instances across local provider accounts.")
     .version("0.1.0")
     .option("--config <path>", "Account configuration file")
     .option(
@@ -117,6 +117,15 @@ export async function runCli(
   ): Promise<void> => {
     const account = await selectedAccount(command);
     registry.validateAccount(account);
+    const definition = registry.get(account.provider_id);
+    if (mutation.instance_id !== undefined) {
+      definition.validateInstanceId?.(mutation.instance_id);
+    }
+    if (mutation.action === "instance.create") {
+      definition.validateCreateInput?.(mutation.input);
+    } else if (mutation.action === "instance.edit") {
+      definition.validateEditInput?.(mutation.input);
+    }
     const preview = {
       account_id: account.id,
       provider_id: account.provider_id,
@@ -125,7 +134,7 @@ export async function runCli(
       ...(mutation.input ? { input: mutation.input } : {}),
       notice: [
         mutation.notice,
-        registry.get(account.provider_id).info.operation_notes?.[
+        definition.info.operation_notes?.[
           mutation.action.split(".")[1] as InstanceAction
         ],
       ]

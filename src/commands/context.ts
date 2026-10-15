@@ -49,13 +49,25 @@ export interface CommonOptions {
   dry_run?: boolean;
 }
 
-export interface Mutation {
-  action: `instance.${InstanceAction}`;
-  instance_id?: string;
-  input?: CreateInstanceInput | EditInstanceInput;
+interface MutationOperation {
   notice: string;
   execute(provider: Provider): Promise<unknown>;
 }
+
+export type Mutation = MutationOperation &
+  (
+    | {
+        action: "instance.create";
+        input: CreateInstanceInput;
+        instance_id?: never;
+      }
+    | { action: "instance.edit"; input: EditInstanceInput; instance_id: string }
+    | {
+        action: `instance.${Exclude<InstanceAction, "create" | "edit">}`;
+        input?: never;
+        instance_id: string;
+      }
+  );
 
 export interface CommandContext {
   env: Readonly<Record<string, string | undefined>>;

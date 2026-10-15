@@ -12,6 +12,23 @@ export function nonblank(value: string, label: string): string {
   return value;
 }
 
+export function positiveInteger(value: string): number {
+  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new AppError("invalid_input", "Use a positive whole number.");
+  }
+  return Number(value);
+}
+
+export function nonnegativeInteger(value: string): number {
+  if (
+    !/^(0|[1-9][0-9]*)$/.test(value) ||
+    !Number.isSafeInteger(Number(value))
+  ) {
+    throw new AppError("invalid_input", "Use a nonnegative whole number.");
+  }
+  return Number(value);
+}
+
 export function instanceId(value: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value) || value.includes("..")) {
     throw new AppError(
@@ -30,6 +47,15 @@ export function summary(instance: Instance): Record<string, unknown> {
     region_id: instance.region_id,
     plan_id: instance.plan_id,
     public_ipv4: instance.public_ipv4,
+    ...(instance.gpu_name === undefined ? {} : { gpu_name: instance.gpu_name }),
+    ...(instance.gpu_count === undefined
+      ? {}
+      : { gpu_count: instance.gpu_count }),
+    ...(instance.hourly_cost === undefined
+      ? {}
+      : { hourly_cost: instance.hourly_cost }),
+    ...(instance.ssh_host === undefined ? {} : { ssh_host: instance.ssh_host }),
+    ...(instance.ssh_port === undefined ? {} : { ssh_port: instance.ssh_port }),
   };
 }
 

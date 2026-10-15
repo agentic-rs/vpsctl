@@ -6,7 +6,14 @@ import type {
 } from "../core/provider.ts";
 import type { CliCommand } from "./command.ts";
 import type { CommandContext, CommonOptions } from "./context.ts";
-import { collect, instanceId, nonblank, summary } from "./input.ts";
+import {
+  collect,
+  instanceId,
+  nonblank,
+  nonnegativeInteger,
+  positiveInteger,
+  summary,
+} from "./input.ts";
 import { render } from "./output.ts";
 import { queryAllAccounts } from "./query.ts";
 
@@ -17,7 +24,7 @@ export function registerInstanceCommands(
   const { io, print, readProvider, mutate, mutationFlags } = context;
   const instances = program
     .command("instance")
-    .description("Create, inspect, and control VPS instances");
+    .description("Create, inspect, and control compute instances");
   const list = instances
     .command("list")
     .description("List instances for one account or all registered accounts")
@@ -76,9 +83,27 @@ export function registerInstanceCommands(
       .command("create")
       .alias("buy")
       .description("Provision a new billable instance")
-      .requiredOption("--region <id>", "Region from catalog regions")
-      .requiredOption("--plan <id>", "Plan from catalog plans")
-      .requiredOption("--image <id>", "OS image from catalog images")
+      .option("--region <id>", "Region; required by Vultr, optional on RunPod")
+      .option("--plan <id>", "Vultr plan or RunPod GPU type from catalog plans")
+      .option("--image <id>", "Vultr OS ID or GPU provider Docker image")
+      .option("--offer <id>", "Vast.ai offer ID from catalog offers")
+      .option("--gpu-count <count>", "RunPod GPU count", positiveInteger)
+      .option(
+        "--disk-gb <size>",
+        "GPU instance container disk size in GB",
+        positiveInteger,
+      )
+      .option(
+        "--volume-gb <size>",
+        "RunPod persistent local volume size in GB",
+        nonnegativeInteger,
+      )
+      .option(
+        "--port <port/protocol>",
+        "RunPod port, e.g. 22/tcp; repeat to add ports",
+        collect,
+      )
+      .option("--ssh", "Enable SSH on a compatible GPU container image")
       .option("--label <label>", "Instance label")
       .option("--hostname <hostname>", "Hostname set during provisioning")
       .option(
@@ -91,9 +116,15 @@ export function registerInstanceCommands(
   );
   create.action(async () => {
     const flags = create.opts<{
-      region: string;
-      plan: string;
-      image: string;
+      region?: string;
+      plan?: string;
+      image?: string;
+      offer?: string;
+      gpu_count?: number;
+      disk_gb?: number;
+      volume_gb?: number;
+      port?: string[];
+      ssh?: boolean;
       label?: string;
       hostname?: string;
       ssh_key?: string[];
@@ -101,9 +132,25 @@ export function registerInstanceCommands(
       enable_ipv6?: boolean;
     }>();
     const input: CreateInstanceInput = {
-      region_id: nonblank(flags.region, "Region"),
-      plan_id: nonblank(flags.plan, "Plan"),
-      image_id: nonblank(flags.image, "Image"),
+      ...(flags.region !== undefined
+        ? { region_id: nonblank(flags.region, "Region") }
+        : {}),
+      ...(flags.plan !== undefined
+        ? { plan_id: nonblank(flags.plan, "Plan") }
+        : {}),
+      ...(flags.image !== undefined
+        ? { image_id: nonblank(flags.image, "Image") }
+        : {}),
+      ...(flags.offer !== undefined
+        ? { offer_id: nonblank(flags.offer, "Offer") }
+        : {}),
+      ...(flags.gpu_count !== undefined ? { gpu_count: flags.gpu_count } : {}),
+      ...(flags.disk_gb !== undefined ? { disk_gb: flags.disk_gb } : {}),
+      ...(flags.volume_gb !== undefined ? { volume_gb: flags.volume_gb } : {}),
+      ...(flags.port !== undefined
+        ? { ports: flags.port.map((port) => nonblank(port, "Port")) }
+        : {}),
+      ...(flags.ssh !== undefined ? { enable_ssh: flags.ssh } : {}),
       ...(flags.label !== undefined
         ? { label: nonblank(flags.label, "Label") }
         : {}),
@@ -209,7 +256,7 @@ export function registerInstanceCommands(
     [
       "destroy",
       "Permanently delete an instance",
-      "Permanently destroys this instance and its local data and releases its IP address.",
+      "Permanently destroys this instance and its local data.",
       (provider: Provider, id: string) => provider.destroyInstance(id),
     ],
   ] as const) {

@@ -1,4 +1,24 @@
+import {
+  RunpodProvider,
+  runpod_info,
+  validateCreateInput as validateRunpodCreate,
+  validateEditInput as validateRunpodEdit,
+} from "../providers/runpod/index.ts";
+import { parseIdentifier as parseRunpodId } from "../providers/runpod/schemas.ts";
+import {
+  VastProvider,
+  validateCreateInput as validateVastCreate,
+  validateEditInput as validateVastEdit,
+  vast_info,
+} from "../providers/vast/index.ts";
+import { instancePath as vastInstancePath } from "../providers/vast/schemas.ts";
 import { VultrProvider, vultr_info } from "../providers/vultr/index.ts";
+import {
+  createBody,
+  editBody,
+  identifier_schema,
+  validateInput,
+} from "../providers/vultr/schemas.ts";
 import type { Account } from "./accounts.ts";
 import { resolveCredentialReferences, resolveCredentials } from "./accounts.ts";
 import { AppError } from "./errors.ts";
@@ -7,6 +27,15 @@ import type { Provider, ProviderDefinition } from "./provider.ts";
 const vultr_definition: ProviderDefinition = {
   info: vultr_info,
   credential_fields: ["api_key"],
+  validateInstanceId(id) {
+    validateInput(identifier_schema, id);
+  },
+  validateCreateInput(input) {
+    createBody(input);
+  },
+  validateEditInput(input) {
+    editBody(input);
+  },
   create(credentials) {
     const api_key = credentials.api_key;
     if (!api_key) {
@@ -19,10 +48,56 @@ const vultr_definition: ProviderDefinition = {
   },
 };
 
+const runpod_definition: ProviderDefinition = {
+  info: runpod_info,
+  credential_fields: ["api_key"],
+  validateInstanceId(id) {
+    parseRunpodId(id);
+  },
+  validateCreateInput: validateRunpodCreate,
+  validateEditInput: validateRunpodEdit,
+  create(credentials) {
+    const api_key = credentials.api_key;
+    if (!api_key) {
+      throw new AppError(
+        "authentication",
+        "RunPod requires an api_key credential.",
+      );
+    }
+    return new RunpodProvider({ api_key });
+  },
+};
+
+const vast_definition: ProviderDefinition = {
+  info: vast_info,
+  credential_fields: ["api_key"],
+  validateInstanceId(id) {
+    vastInstancePath(id);
+  },
+  validateCreateInput: validateVastCreate,
+  validateEditInput: validateVastEdit,
+  create(credentials) {
+    const api_key = credentials.api_key;
+    if (!api_key) {
+      throw new AppError(
+        "authentication",
+        "Vast.ai requires an api_key credential.",
+      );
+    }
+    return new VastProvider({ api_key });
+  },
+};
+
 export class ProviderRegistry {
   private readonly definitions = new Map<string, ProviderDefinition>();
 
-  constructor(definitions: readonly ProviderDefinition[] = [vultr_definition]) {
+  constructor(
+    definitions: readonly ProviderDefinition[] = [
+      vultr_definition,
+      runpod_definition,
+      vast_definition,
+    ],
+  ) {
     for (const definition of definitions) {
       const id = definition.info.id;
       if (this.definitions.has(id)) {

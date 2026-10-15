@@ -11,7 +11,7 @@ export function render(value: unknown): string {
   if (Array.isArray(value)) {
     if (value.length === 0) return "No results.";
     const rows = value as Row[];
-    const keys = Object.keys(rows[0] ?? {});
+    const keys = [...new Set(rows.flatMap((row) => Object.keys(row)))];
     const cells = [
       keys,
       ...rows.map((row) => keys.map((key) => display(row[key]))),

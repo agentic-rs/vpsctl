@@ -57,6 +57,7 @@ export const vultr_info: ProviderInfo = {
   operation_notes: {
     start: "Vultr may restart an already running instance.",
     stop: "Vultr billing continues until the instance is destroyed.",
+    destroy: "Vultr releases the instance's IP address when it is destroyed.",
   },
 };
 
