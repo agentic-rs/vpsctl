@@ -101,7 +101,9 @@ An environment reference is stored as `{"source":"env","name":"VULTR_CI_API_KEY"
 
 ## Login troubleshooting
 
-An HTTP `401` means Vultr rejected the credentials. Paste the complete API key value, rather than its name, ID, or masked display value, without quotes or a `Bearer` prefix. For a newly generated IAM key, complete **Finalize Key Generation** in the Vultr Console after copying it. Confirm the key is still active and has not expired, then run `bun run dev login NAME` again. Failed login attempts do not save the rejected key.
+If the error says **Unauthorized IP address**, add the exact address reported by Vultr to **API Access Control** for that user or account, then run `bun run dev login NAME` again. The CLI recognizes this restriction in HTTP `401` or `403` responses and classifies it as `forbidden`. Use a single-host entry (`/32` for IPv4 or `/128` for IPv6). A terminal using a VPN or proxy may have a different outbound address from your browser, so use the address Vultr reports for the failed request.
+
+For other HTTP `401` errors, check the provider's error detail. Paste the complete API key value, rather than its name, ID, or masked display value, without quotes or a `Bearer` prefix. For a newly generated IAM key, complete **Finalize Key Generation** in the Vultr Console after copying it. Confirm the key is still active and has not expired. Failed login attempts do not save the rejected key.
 
 HTTP errors include Vultr's JSON `error` message when available, with the supplied API key and Bearer credentials redacted. Other response fields and non-JSON bodies are omitted. Use that detail to distinguish credential rejection from permission or access-control failures.
 

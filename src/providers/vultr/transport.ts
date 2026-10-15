@@ -10,7 +10,15 @@ export interface VultrOptions {
 
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
-function errorCode(status_code: number): ErrorCode {
+function isIpAccessError(status_code: number, detail?: string): boolean {
+  return (
+    (status_code === 401 || status_code === 403) &&
+    /^unauthorized ip address\s*:/i.test(detail ?? "")
+  );
+}
+
+function errorCode(status_code: number, detail?: string): ErrorCode {
+  if (isIpAccessError(status_code, detail)) return "forbidden";
   if (status_code === 400 || status_code === 422) return "invalid_input";
   if (status_code === 401) return "authentication";
   if (status_code === 403) return "forbidden";
@@ -22,6 +30,9 @@ function errorCode(status_code: number): ErrorCode {
 
 function errorMessage(status_code: number, detail?: string): string {
   const summary = `Vultr rejected the request (HTTP ${status_code}).${detail ? ` ${detail}` : ""}`;
+  if (isIpAccessError(status_code, detail)) {
+    return `${summary} Add the IP address reported by Vultr to this user's API Access Control as a single-host entry, then run login again.`;
+  }
   if (status_code === 401) {
     return `${summary} Use the complete active API key, not its ID or masked display value. For a new key, complete Finalize Key Generation in Vultr Console and check its expiration before running login again.`;
   }
@@ -132,7 +143,7 @@ export class VultrTransport {
         const advice = response.status >= 500 ? retry_advice : "";
         const detail = await errorDetail(response, this.#api_key);
         throw new AppError(
-          errorCode(response.status),
+          errorCode(response.status, detail),
           `${errorMessage(response.status, detail)}${advice}`,
           response.status,
         );

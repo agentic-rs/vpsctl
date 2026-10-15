@@ -349,19 +349,60 @@ describe("Vultr validation and errors", () => {
     },
   );
 
-  test("includes Vultr's authentication reason in an HTTP 401 error", async () => {
+  test.each([401, 403])(
+    "identifies an unauthorized IP address in HTTP %i as an access-control rejection",
+    async (status_code) => {
+      const reason = "Unauthorized IP address: 198.51.100.42";
+      const { provider, requests } = harness([
+        json({ error: reason }, status_code),
+      ]);
+      const error = await provider
+        .listInstances()
+        .catch((error: unknown) => error);
+
+      expect(error).toBeInstanceOf(AppError);
+      expect(error).toMatchObject({ code: "forbidden", status_code });
+      expect(String(error)).toContain(reason);
+      expect(String(error)).toContain(
+        "Add the IP address reported by Vultr to this user's API Access Control as a single-host entry, then run login again.",
+      );
+      expect(String(error)).not.toContain("Finalize Key Generation");
+      expect(String(error)).not.toContain("new key");
+      expect(String(error)).not.toContain("complete active API key");
+      expect(requests).toHaveLength(1);
+    },
+  );
+
+  test("recognizes IP access-control errors with surrounding whitespace and mixed case", async () => {
     const { provider, requests } = harness([
-      json({ error: "The API key has expired." }, 401),
+      json({ error: "  UnAuThOrIzEd IP AdDrEsS : 198.51.100.42  " }, 401),
     ]);
     const error = await provider
       .listInstances()
       .catch((error: unknown) => error);
 
-    expect(error).toBeInstanceOf(AppError);
-    expect(error).toMatchObject({ code: "authentication", status_code: 401 });
-    expect(String(error)).toContain("The API key has expired.");
+    expect(error).toMatchObject({ code: "forbidden", status_code: 401 });
+    expect(String(error)).toContain("198.51.100.42");
+    expect(String(error)).toContain("API Access Control");
     expect(requests).toHaveLength(1);
   });
+
+  test.each(["The API key has expired.", "Invalid API key."])(
+    "retains authentication guidance for an unrelated HTTP 401 reason: %s",
+    async (reason) => {
+      const { provider, requests } = harness([json({ error: reason }, 401)]);
+      const error = await provider
+        .listInstances()
+        .catch((error: unknown) => error);
+
+      expect(error).toBeInstanceOf(AppError);
+      expect(error).toMatchObject({ code: "authentication", status_code: 401 });
+      expect(String(error)).toContain(reason);
+      expect(String(error)).toContain("complete active API key");
+      expect(String(error)).not.toContain("API Access Control");
+      expect(requests).toHaveLength(1);
+    },
+  );
 
   test("redacts credentials echoed in provider error details", async () => {
     const other_token = "another-sensitive-bearer-token";
