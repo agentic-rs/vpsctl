@@ -9,6 +9,7 @@ import {
   withCredentialOptions,
 } from "./credentials.ts";
 import { render } from "./output.ts";
+import { resolveProvider } from "./providers.ts";
 import { queryAllAccounts } from "./query.ts";
 
 async function accountMetadata(provider: Provider): Promise<AccountMetadata> {
@@ -116,15 +117,24 @@ export function registerAccountCommands(
     accounts
       .command("add <id>")
       .description("Register an account; prompts for credentials by default")
-      .requiredOption("--provider <id>", "Registered provider ID"),
+      .option(
+        "--provider <id>",
+        "Provider ID (choose interactively if omitted)",
+      ),
   );
   account_add.action(async (id: string) => {
     validateAccountId(id);
-    const flags = account_add.opts<CredentialOptions & { provider: string }>();
-    const definition = registry.get(flags.provider);
+    const flags = account_add.optsWithGlobals<
+      CredentialOptions & CommonOptions & { provider?: string }
+    >();
+    const definition = await resolveProvider(context, {
+      provider_id: flags.provider,
+      account_id: id,
+      allow_prompt: !flags.json && !flags.credentials_stdin,
+    });
     const account: Account = {
       id,
-      provider_id: flags.provider,
+      provider_id: definition.info.id,
       credentials: await readCredentials(definition, io, flags),
     };
     registry.validateAccount(account);

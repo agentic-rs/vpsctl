@@ -12,6 +12,7 @@ import {
   readCredentials,
   withCredentialOptions,
 } from "./credentials.ts";
+import { resolveProvider } from "./providers.ts";
 
 function checkCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new AppError("cancelled", "Operation cancelled.");
@@ -103,34 +104,14 @@ export function registerLoginCommand(
       !flags.credentials_stdin &&
       flags.credential.length === 0;
     if (guided) io.intro?.("Connect a VPS account");
-    const id_provider = supplied_id?.includes(":")
-      ? supplied_id.split(":")[0]
-      : undefined;
-    let provider_id = flags.provider ?? existing?.provider_id ?? id_provider;
-    if (!provider_id && guided && io.select) {
-      provider_id = await io.select(
-        "Choose a provider",
-        registry.list().map(({ info }) => ({
-          value: info.id,
-          label: info.name,
-          hint: info.id,
-        })),
-      );
-    }
-    provider_id ??= "vultr";
-    if (existing && existing.provider_id !== provider_id) {
-      throw new AppError(
-        "conflict",
-        `Account '${existing.id}' uses provider '${existing.provider_id}'. Choose a different account name for '${provider_id}'.`,
-      );
-    }
-    if (id_provider && id_provider !== provider_id) {
-      throw new AppError(
-        "invalid_input",
-        "The account ID prefix must match the selected provider.",
-      );
-    }
-    const definition = registry.get(provider_id);
+    const definition = await resolveProvider(context, {
+      provider_id: flags.provider,
+      account_id: supplied_id,
+      existing_account: existing,
+      allow_prompt: !flags.json && !flags.credentials_stdin,
+      fallback_provider_id: "vultr",
+    });
+    const provider_id = definition.info.id;
     const credentials = await readCredentials(definition, io, flags);
     const provider = registry.connectCredentials(provider_id, credentials, env);
     const progress = guided

@@ -297,15 +297,50 @@ describe("verified account login", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
 
-  test("does not ask for a provider when it was specified or credentials were supplied", async () => {
+  test("uses the chosen provider for interactive environment credential references", async () => {
+    const { run, store, connections, metadata_calls, state } = await fixture();
+    const secret = "environment-provider-key";
+    const result = await run(["login", "--credential", "api_key=OTHER_TOKEN"], {
+      is_interactive: true,
+      select_input: "other",
+      env: { OTHER_TOKEN: secret },
+      guided_ui: true,
+    });
+    expect(result.exit_code).toBe(0);
+    expect(result.select_prompts).toHaveLength(1);
+    expect(result.select_prompts[0]?.message).toBe("Choose a provider");
+    expect(result.secret_prompts).toEqual([]);
+    expect(result.stdin_reads).toBe(0);
+    expect(connections).toEqual([
+      { provider_id: "other", credentials: { api_key: secret } },
+    ]);
+    expect(metadata_calls).toEqual(["other"]);
+    expect((await store.read()).accounts).toEqual([
+      {
+        id: `other:${state.email}`,
+        provider_id: "other",
+        credentials: { api_key: { source: "env", name: "OTHER_TOKEN" } },
+      },
+    ]);
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  test("does not ask for a provider when it is explicit or the input is scripted", async () => {
     const { run } = await fixture();
-    for (const argv of [
-      ["login", "named", "--provider", "other"],
-      ["login", "--credentials-stdin"],
-      ["login", "--credential", "api_key=VULTR_TOKEN"],
+    for (const { argv, is_interactive } of [
+      { argv: ["login", "named", "--provider", "other"], is_interactive: true },
+      { argv: ["login", "--credentials-stdin"], is_interactive: true },
+      {
+        argv: ["login", "--credential", "api_key=VULTR_TOKEN", "--json"],
+        is_interactive: true,
+      },
+      {
+        argv: ["login", "--credential", "api_key=VULTR_TOKEN"],
+        is_interactive: false,
+      },
     ]) {
       const result = await run(argv, {
-        is_interactive: true,
+        is_interactive,
         select_input: "missing-provider",
         secret_input: "explicit-provider-key",
         stdin_input: JSON.stringify({ api_key: "piped-provider-key" }),
@@ -314,6 +349,31 @@ describe("verified account login", () => {
       expect(result.exit_code).toBe(0);
       expect(result.select_prompts).toEqual([]);
     }
+  });
+
+  test("does not ask for a provider when an existing account or canonical ID identifies it", async () => {
+    const { run, store, state, connections } = await fixture();
+    await store.add(account("existing", "other"));
+    for (const id of ["existing", `other:${state.email}`]) {
+      const result = await run(["login", id], {
+        is_interactive: true,
+        select_input: "must-not-select-provider",
+        secret_input: "inferred-provider-key",
+      });
+      expect(result.exit_code).toBe(0);
+      expect(result.select_prompts).toEqual([]);
+      expect(result.secret_prompts).toEqual(["Test other API key"]);
+    }
+    expect(connections).toEqual([
+      {
+        provider_id: "other",
+        credentials: { api_key: "inferred-provider-key" },
+      },
+      {
+        provider_id: "other",
+        credentials: { api_key: "inferred-provider-key" },
+      },
+    ]);
   });
 
   test("requires metadata for derived IDs while preserving aliases for providers without it", async () => {
