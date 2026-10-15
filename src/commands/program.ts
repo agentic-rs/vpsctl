@@ -55,10 +55,26 @@ export async function runCli(
   };
   const selectedAccount = async (command: CliCommand): Promise<Account> => {
     const config = await storeFor(command).read();
-    return resolveAccount(
-      config,
-      flagsFor(command).account ?? env.VPS_CTL_ACCOUNT,
-    );
+    const flags = flagsFor(command);
+    let account_id =
+      flags.account ?? env.VPS_CTL_ACCOUNT ?? config.default_account_id;
+    if (
+      account_id === undefined &&
+      io.is_interactive &&
+      !flags.json &&
+      io.select &&
+      config.accounts.length > 0
+    ) {
+      account_id = await io.select(
+        "Choose an account",
+        config.accounts.map((account) => ({
+          value: account.id,
+          label: account.id,
+          hint: account.provider_id,
+        })),
+      );
+    }
+    return resolveAccount(config, account_id);
   };
   const print = (
     command: CliCommand,
@@ -177,6 +193,6 @@ export async function runCli(
     } else {
       io.write_err(`Error: ${message}\n`);
     }
-    return 1;
+    return code === "cancelled" ? 130 : 1;
   }
 }

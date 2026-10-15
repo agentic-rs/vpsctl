@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { type CliIO, runCli } from "../src/commands/program.ts";
 import { type Account, AccountStore } from "../src/core/accounts.ts";
 import { AppError } from "../src/core/errors.ts";
-import type { Instance, ProviderDefinition } from "../src/core/provider.ts";
+import type {
+  AccountMetadata,
+  Instance,
+  ProviderDefinition,
+  ProviderRequestOptions,
+} from "../src/core/provider.ts";
 import { ProviderRegistry } from "../src/core/registry.ts";
 
 interface RunOptions {
@@ -15,6 +20,9 @@ interface RunOptions {
   secret_error?: Error;
   stdin_input?: string;
   text_input?: string;
+  select_input?: string;
+  select_error?: Error;
+  guided_ui?: boolean;
 }
 
 const temp_dirs: string[] = [];
@@ -54,13 +62,24 @@ async function fixture() {
     credentials: Readonly<Record<string, string>>;
   }[] = [];
   const list_calls: string[] = [];
+  const metadata_calls: string[] = [];
+  const request_signals: (AbortSignal | undefined)[] = [];
   const state: {
     verification_error?: AppError;
+    metadata_error?: AppError;
+    metadata_supported: boolean;
+    email: string;
+    before_metadata?: () => Promise<void>;
     before_list?: () => Promise<void>;
+    progress_controller?: AbortController;
     instances: Instance[];
-  } = { instances };
+  } = {
+    instances,
+    email: "Tester.Name+sample@example.com",
+    metadata_supported: true,
+  };
   const unused = async (): Promise<never> => {
-    throw new Error("Login must only list instances.");
+    throw new Error("Login must only query account metadata and instances.");
   };
   const definitions: ProviderDefinition[] = ["vultr", "other"].map((id) => ({
     info: { id, name: `Test ${id}`, capabilities: ["instances"] },
@@ -69,8 +88,32 @@ async function fixture() {
       connections.push({ provider_id: id, credentials });
       return {
         info: this.info,
-        async listInstances() {
+        ...(state.metadata_supported
+          ? {
+              async getAccountMetadata(
+                options?: ProviderRequestOptions,
+              ): Promise<AccountMetadata> {
+                metadata_calls.push(id);
+                request_signals.push(options?.signal);
+                await state.before_metadata?.();
+                if (state.metadata_error) throw state.metadata_error;
+                return {
+                  provider_id: id,
+                  name: "Test Account",
+                  email: state.email,
+                  balance: 0,
+                  pending_charges: 3,
+                  last_payment_date: "2026-10-01",
+                  last_payment_amount: 5,
+                  currency: "USD",
+                  acls: ["instances"],
+                };
+              },
+            }
+          : {}),
+        async listInstances(options) {
           list_calls.push(id);
+          request_signals.push(options?.signal);
           await state.before_list?.();
           if (state.verification_error) throw state.verification_error;
           return state.instances;
@@ -95,6 +138,11 @@ async function fixture() {
     const errors: string[] = [];
     const secret_prompts: string[] = [];
     const text_prompts: string[] = [];
+    const select_prompts: {
+      message: string;
+      options: Parameters<NonNullable<CliIO["select"]>>[1];
+    }[] = [];
+    const guided_events: { type: string; message: string }[] = [];
     let stdin_reads = 0;
     const io: CliIO = {
       write_out: (text) => output.push(text),
@@ -116,6 +164,38 @@ async function fixture() {
         text_prompts.push(message);
         return options.text_input ?? "";
       },
+      async select(message, choices) {
+        select_prompts.push({ message, options: choices });
+        if (options.select_error) throw options.select_error;
+        return options.select_input ?? choices[0]?.value ?? "";
+      },
+      ...(options.guided_ui
+        ? {
+            intro(message: string) {
+              guided_events.push({ type: "intro", message });
+            },
+            outro(message: string) {
+              guided_events.push({ type: "outro", message });
+            },
+            note(message: string) {
+              guided_events.push({ type: "note", message });
+            },
+            progress(message: string) {
+              guided_events.push({ type: "progress", message });
+              const controller = new AbortController();
+              state.progress_controller = controller;
+              return {
+                signal: controller.signal,
+                stop(message: string) {
+                  guided_events.push({ type: "stop", message });
+                },
+                fail(message: string) {
+                  guided_events.push({ type: "fail", message });
+                },
+              };
+            },
+          }
+        : {}),
     };
     const exit_code = await runCli(["--config", config_path, ...argv], {
       env: options.env ?? {},
@@ -129,9 +209,20 @@ async function fixture() {
       secret_prompts,
       stdin_reads,
       text_prompts,
+      select_prompts,
+      guided_events,
     };
   };
-  return { config_path, store, connections, list_calls, state, run };
+  return {
+    config_path,
+    store,
+    connections,
+    list_calls,
+    metadata_calls,
+    request_signals,
+    state,
+    run,
+  };
 }
 
 afterEach(async () => {
@@ -143,38 +234,260 @@ afterEach(async () => {
 });
 
 describe("verified account login", () => {
-  test("prompts for a missing account name before requesting its credentials", async () => {
-    const { run, store, list_calls } = await fixture();
+  test("derives an omitted ID from verified metadata without asking for an account name", async () => {
+    const { run, store, list_calls, metadata_calls, state } = await fixture();
     const result = await run(["login", "--json"], {
       is_interactive: true,
-      text_input: "personal",
       secret_input: "named-login-test-key",
+      guided_ui: true,
     });
     expect(result.exit_code).toBe(0);
-    expect(result.text_prompts).toHaveLength(1);
+    expect(result.text_prompts).toEqual([]);
     expect(result.secret_prompts).toHaveLength(1);
     expect(list_calls).toEqual(["vultr"]);
-    expect(JSON.parse(result.stdout).data.id).toBe("personal");
-    expect((await store.read()).accounts[0]?.id).toBe("personal");
+    expect(metadata_calls).toEqual(["vultr"]);
+    expect(JSON.parse(result.stdout).data.id).toBe(`vultr:${state.email}`);
+    expect((await store.read()).accounts[0]?.id).toBe(`vultr:${state.email}`);
+    expect(result.select_prompts).toEqual([]);
+    expect(result.guided_events).toEqual([]);
+    expect(result.stderr).toBe("");
   });
 
-  test("requires an explicit name noninteractively and validates a prompted name before reading secrets", async () => {
-    const { run, config_path, connections } = await fixture();
-    const missing = await run(["login", "--json"]);
-    expect(missing.exit_code).toBe(1);
-    expect(missing.text_prompts).toEqual([]);
-    expect(missing.secret_prompts).toEqual([]);
-    for (const text_input of ["", "../invalid"]) {
-      const invalid = await run(["login", "--json"], {
+  test("derives an omitted ID noninteractively from piped credentials", async () => {
+    const { run, store, metadata_calls, state } = await fixture();
+    const result = await run(["login", "--credentials-stdin", "--json"], {
+      stdin_input: JSON.stringify({ api_key: "piped-derived-id-key" }),
+    });
+    expect(result.exit_code).toBe(0);
+    expect(result.text_prompts).toEqual([]);
+    expect(result.secret_prompts).toEqual([]);
+    expect(result.select_prompts).toEqual([]);
+    expect(result.stdin_reads).toBe(1);
+    expect(metadata_calls).toEqual(["vultr"]);
+    expect((await store.read()).accounts[0]?.id).toBe(`vultr:${state.email}`);
+    expect(result.stdout).not.toContain("piped-derived-id-key");
+  });
+
+  test("guides interactive login through provider selection and safe progress", async () => {
+    const { run, store, connections, metadata_calls, state } = await fixture();
+    const secret = "guided-provider-login-key";
+    const result = await run(["login"], {
+      is_interactive: true,
+      select_input: "other",
+      secret_input: secret,
+      guided_ui: true,
+    });
+    expect(result.exit_code).toBe(0);
+    expect(result.text_prompts).toEqual([]);
+    expect(result.select_prompts).toHaveLength(1);
+    expect(result.select_prompts[0]?.options).toEqual([
+      { value: "vultr", label: "Test vultr", hint: "vultr" },
+      { value: "other", label: "Test other", hint: "other" },
+    ]);
+    expect(connections).toEqual([
+      { provider_id: "other", credentials: { api_key: secret } },
+    ]);
+    expect(metadata_calls).toEqual(["other"]);
+    expect((await store.read()).accounts[0]?.id).toBe(`other:${state.email}`);
+    const event_types = result.guided_events.map(({ type }) => type);
+    expect(event_types).toContain("intro");
+    expect(event_types).toContain("progress");
+    expect(event_types).toContain("stop");
+    expect(event_types).toContain("outro");
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  test("does not ask for a provider when it was specified or credentials were supplied", async () => {
+    const { run } = await fixture();
+    for (const argv of [
+      ["login", "named", "--provider", "other"],
+      ["login", "--credentials-stdin"],
+      ["login", "--credential", "api_key=VULTR_TOKEN"],
+    ]) {
+      const result = await run(argv, {
         is_interactive: true,
-        text_input,
+        select_input: "missing-provider",
+        secret_input: "explicit-provider-key",
+        stdin_input: JSON.stringify({ api_key: "piped-provider-key" }),
+        env: { VULTR_TOKEN: "environment-provider-key" },
       });
-      expect(invalid.exit_code).toBe(1);
-      expect(invalid.text_prompts).toHaveLength(1);
-      expect(invalid.secret_prompts).toEqual([]);
+      expect(result.exit_code).toBe(0);
+      expect(result.select_prompts).toEqual([]);
     }
+  });
+
+  test("requires metadata for derived IDs while preserving aliases for providers without it", async () => {
+    const { run, config_path, store, state, metadata_calls } = await fixture();
+    state.metadata_supported = false;
+    const derived = await run(["login", "--credentials-stdin", "--json"], {
+      stdin_input: JSON.stringify({ api_key: "unsupported-metadata-key" }),
+    });
+    expect(derived.exit_code).toBe(1);
+    expect(JSON.parse(derived.stderr).error.code).toBe("unsupported_operation");
+    expect(await Bun.file(config_path).exists()).toBe(false);
+    expect(derived.stdout).toBe("");
+    expect(derived.stderr).not.toContain("unsupported-metadata-key");
+    const alias = await run(
+      ["login", "work", "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "supported-alias-key" }),
+      },
+    );
+    expect(alias.exit_code).toBe(0);
+    expect((await store.read()).accounts[0]?.id).toBe("work");
+    expect(metadata_calls).toEqual([]);
+  });
+
+  test("does not save an automatic account after metadata, email, or inventory verification fails", async () => {
+    const { run, state, config_path } = await fixture();
+    const attempt = () =>
+      run(["login", "--credentials-stdin", "--json"], {
+        stdin_input: JSON.stringify({ api_key: "failed-automatic-login-key" }),
+      });
+    state.metadata_error = new AppError("authentication", "Metadata denied.");
+    const denied = await attempt();
+    expect(denied.exit_code).toBe(1);
+    expect(await Bun.file(config_path).exists()).toBe(false);
+    delete state.metadata_error;
+    state.email = "   ";
+    const blank_email = await attempt();
+    expect(blank_email.exit_code).toBe(1);
+    expect(await Bun.file(config_path).exists()).toBe(false);
+    state.email = "valid@example.com";
+    state.verification_error = new AppError(
+      "network_error",
+      "Inventory unavailable.",
+    );
+    const list_failed = await attempt();
+    expect(list_failed.exit_code).toBe(1);
+    expect(await Bun.file(config_path).exists()).toBe(false);
+    for (const result of [denied, blank_email, list_failed]) {
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain("failed-automatic-login-key");
+    }
+  });
+
+  test("protects an explicit provider and email ID from credentials belonging to another email", async () => {
+    const { run, store, state, config_path, metadata_calls } = await fixture();
+    const id = "vultr:expected@example.com";
+    await store.add(account(id));
+    await store.use(id);
+    const original = await readFile(config_path, "utf8");
+    state.email = "someone.else@example.com";
+    const rejected = await run(["login", id, "--credentials-stdin", "--json"], {
+      stdin_input: JSON.stringify({ api_key: "different-account-key" }),
+    });
+    expect(rejected.exit_code).toBe(1);
+    expect(metadata_calls).toEqual(["vultr"]);
+    expect(await readFile(config_path, "utf8")).toBe(original);
+    expect(rejected.stdout).toBe("");
+    expect(rejected.stderr).not.toContain("different-account-key");
+    state.email = "expected@example.com";
+    const matching = await run(["login", id, "--credentials-stdin", "--json"], {
+      stdin_input: JSON.stringify({ api_key: "matching-account-key" }),
+    });
+    expect(matching.exit_code).toBe(0);
+    expect((await store.read()).accounts[0]?.credentials.api_key).toEqual({
+      source: "literal",
+      value: "matching-account-key",
+    });
+    expect((await store.read()).default_account_id).toBe(id);
+  });
+
+  test("infers a new canonical ID's provider and rejects a conflicting provider before reading secrets", async () => {
+    const { run, store, state, connections } = await fixture();
+    const id = `other:${state.email}`;
+    const conflicting = await run(
+      ["login", id, "--provider", "vultr", "--json"],
+      {
+        is_interactive: true,
+        secret_input: "must-not-read-key",
+      },
+    );
+    expect(conflicting.exit_code).toBe(1);
+    expect(conflicting.secret_prompts).toEqual([]);
+    expect(connections).toEqual([]);
+    const matching = await run(["login", id, "--json"], {
+      is_interactive: true,
+      secret_input: "canonical-other-provider-key",
+    });
+    expect(matching.exit_code).toBe(0);
+    expect(matching.select_prompts).toEqual([]);
+    expect(connections).toEqual([
+      {
+        provider_id: "other",
+        credentials: { api_key: "canonical-other-provider-key" },
+      },
+    ]);
+    expect((await store.read()).accounts[0]?.id).toBe(id);
+  });
+
+  test("renews a derived account while preserving its default and unrelated aliases", async () => {
+    const { run, store, state } = await fixture();
+    const id = `vultr:${state.email}`;
+    const unrelated = account("personal");
+    await store.add(account(id));
+    await store.add(unrelated);
+    await store.use(id);
+    const result = await run(["login", "--credentials-stdin", "--json"], {
+      stdin_input: JSON.stringify({ api_key: "renewed-derived-account-key" }),
+    });
+    expect(result.exit_code).toBe(0);
+    expect(await store.read()).toEqual({
+      version: 1,
+      default_account_id: id,
+      accounts: [
+        {
+          id,
+          provider_id: "vultr",
+          credentials: {
+            api_key: {
+              source: "literal",
+              value: "renewed-derived-account-key",
+            },
+          },
+        },
+        unrelated,
+      ],
+    });
+  });
+
+  test("cancelled provider selection stops before reading secrets or creating configuration", async () => {
+    const { run, config_path, connections } = await fixture();
+    const result = await run(["login"], {
+      is_interactive: true,
+      guided_ui: true,
+      select_error: new AppError("cancelled", "Operation cancelled."),
+    });
+    expect(result.exit_code).toBe(130);
+    expect(result.select_prompts).toHaveLength(1);
+    expect(result.secret_prompts).toEqual([]);
     expect(connections).toEqual([]);
     expect(await Bun.file(config_path).exists()).toBe(false);
+  });
+
+  test("cancelled verification propagates its signal and saves no credentials", async () => {
+    const { run, state, request_signals, config_path } = await fixture();
+    state.before_list = async () => {
+      state.progress_controller?.abort(
+        new AppError("cancelled", "Operation cancelled."),
+      );
+    };
+    const result = await run(["login", "--provider", "vultr"], {
+      is_interactive: true,
+      guided_ui: true,
+      secret_input: "cancelled-verification-key",
+    });
+    expect(result.exit_code).toBe(130);
+    expect(state.progress_controller?.signal.aborted).toBe(true);
+    expect(request_signals.length).toBeGreaterThan(0);
+    expect(
+      request_signals.every(
+        (signal) => signal === state.progress_controller?.signal,
+      ),
+    ).toBe(true);
+    expect(await Bun.file(config_path).exists()).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("cancelled-verification-key");
   });
 
   test("prompts for a secret, verifies before saving, and prints only a safe summary", async () => {
@@ -191,7 +504,7 @@ describe("verified account login", () => {
     expect(result.exit_code).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.secret_prompts).toHaveLength(1);
-    expect(result.secret_prompts[0]).toContain("api_key");
+    expect(result.secret_prompts[0]).toContain("API key");
     expect(result.stdin_reads).toBe(0);
     expect(connections).toEqual([
       { provider_id: "vultr", credentials: { api_key: secret } },
@@ -434,13 +747,12 @@ describe("verified account login", () => {
     const { run, store, config_path, connections } = await fixture();
     await store.add(account("work"));
     const original = await readFile(config_path, "utf8");
-    const cancelled = new Error("User cancelled the prompt.");
-    cancelled.name = "ExitPromptError";
+    const cancelled = new AppError("cancelled", "Operation cancelled.");
     const result = await run(["login", "work", "--json"], {
       is_interactive: true,
       secret_error: cancelled,
     });
-    expect(result.exit_code).toBe(1);
+    expect(result.exit_code).toBe(130);
     expect(result.stdout).toBe("");
     expect(result.secret_prompts).toHaveLength(1);
     expect(connections).toEqual([]);

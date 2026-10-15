@@ -1,6 +1,6 @@
 import { VultrProvider, vultr_info } from "../providers/vultr/index.ts";
 import type { Account } from "./accounts.ts";
-import { resolveCredentials } from "./accounts.ts";
+import { resolveCredentialReferences, resolveCredentials } from "./accounts.ts";
 import { AppError } from "./errors.ts";
 import type { Provider, ProviderDefinition } from "./provider.ts";
 
@@ -51,13 +51,20 @@ export class ProviderRegistry {
   }
 
   validateAccount(account: Account): void {
-    const definition = this.get(account.provider_id);
-    const fields = Object.keys(account.credentials);
+    this.validateCredentialFields(account.provider_id, account.credentials);
+  }
+
+  private validateCredentialFields(
+    provider_id: string,
+    credentials: Account["credentials"],
+  ): void {
+    const definition = this.get(provider_id);
+    const fields = Object.keys(credentials);
     for (const field of definition.credential_fields) {
       if (!fields.includes(field)) {
         throw new AppError(
           "invalid_input",
-          `Provider '${account.provider_id}' requires credential '${field}'.`,
+          `Provider '${provider_id}' requires credential '${field}'.`,
         );
       }
     }
@@ -65,7 +72,7 @@ export class ProviderRegistry {
       if (!definition.credential_fields.includes(field)) {
         throw new AppError(
           "invalid_input",
-          `Unknown credential '${field}' for provider '${account.provider_id}'.`,
+          `Unknown credential '${field}' for provider '${provider_id}'.`,
         );
       }
     }
@@ -78,6 +85,17 @@ export class ProviderRegistry {
     this.validateAccount(account);
     return this.get(account.provider_id).create(
       resolveCredentials(account, env),
+    );
+  }
+
+  connectCredentials(
+    provider_id: string,
+    credentials: Account["credentials"],
+    env: Readonly<Record<string, string | undefined>>,
+  ): Provider {
+    this.validateCredentialFields(provider_id, credentials);
+    return this.get(provider_id).create(
+      resolveCredentialReferences(credentials, env),
     );
   }
 }

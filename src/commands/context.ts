@@ -8,6 +8,18 @@ import type {
 import type { ProviderRegistry } from "../core/registry.ts";
 import type { CliCommand } from "./command.ts";
 
+export interface PromptOption {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
+export interface PromptProgress {
+  signal?: AbortSignal;
+  stop(message: string): void;
+  fail(message: string): void;
+}
+
 export interface CliIO {
   write_out(text: string): void;
   write_err(text: string): void;
@@ -16,6 +28,11 @@ export interface CliIO {
   read_text?(message: string): Promise<string>;
   read_secret?(message: string): Promise<string>;
   read_stdin?(): Promise<string>;
+  select?(message: string, options: PromptOption[]): Promise<string>;
+  intro?(message: string): void;
+  outro?(message: string): void;
+  note?(message: string, title: string): void;
+  progress?(message: string): PromptProgress;
 }
 
 export interface CliOptions {

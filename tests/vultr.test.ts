@@ -410,6 +410,218 @@ describe("Vultr pagination and catalogs", () => {
   });
 });
 
+describe("Vultr read cancellation", () => {
+  test.each(["getAccountMetadata", "listInstances"] as const)(
+    "%s rejects an already cancelled signal before fetching",
+    async (method) => {
+      const { provider, requests } = harness([]);
+      const controller = new AbortController();
+      controller.abort(api_key);
+
+      await expect(
+        provider[method]({ signal: controller.signal }),
+      ).rejects.toMatchObject({
+        code: "cancelled",
+        message: "Operation cancelled.",
+      });
+      expect(requests).toHaveLength(0);
+    },
+  );
+
+  test.each(["getAccountMetadata", "listInstances"] as const)(
+    "%s aborts an in-flight fetch without exposing its rejection or retry advice",
+    async (method) => {
+      const requests: Request[] = [];
+      const controller = new AbortController();
+      const provider = new VultrProvider({
+        api_key,
+        fetch: (request) => {
+          requests.push(request);
+          return new Promise((_resolve, reject) => {
+            request.signal.addEventListener(
+              "abort",
+              () => reject(new Error(`Aborted with secret ${api_key}`)),
+              { once: true },
+            );
+          });
+        },
+      });
+      const result = provider[method]({ signal: controller.signal }).catch(
+        (error: unknown) => error,
+      );
+      controller.abort(api_key);
+      const error = await result;
+
+      expect(error).toBeInstanceOf(AppError);
+      expect(error).toMatchObject({
+        code: "cancelled",
+        message: "Operation cancelled.",
+      });
+      expect(String(error)).not.toContain(api_key);
+      expect(String(error)).not.toContain("retry");
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.signal.aborted).toBe(true);
+    },
+  );
+
+  test.each([200, 401])(
+    "reports cancellation while parsing an HTTP %i body",
+    async (status_code) => {
+      const controller = new AbortController();
+      const parsing = Promise.withResolvers<void>();
+      const provider = new VultrProvider({
+        api_key,
+        fetch: async (request) => {
+          const response = new Response(null, { status: status_code });
+          Object.defineProperty(response, "json", {
+            value: () => {
+              parsing.resolve();
+              return new Promise((_resolve, reject) => {
+                request.signal.addEventListener(
+                  "abort",
+                  () => reject(new Error(`Body failure ${api_key}`)),
+                  { once: true },
+                );
+              });
+            },
+          });
+          return response;
+        },
+      });
+      const result = provider
+        .getAccountMetadata({ signal: controller.signal })
+        .catch((error: unknown) => error);
+      await parsing.promise;
+      controller.abort(api_key);
+
+      const error = await result;
+      expect(error).toMatchObject({
+        code: "cancelled",
+        message: "Operation cancelled.",
+      });
+      expect(String(error)).not.toContain(api_key);
+    },
+  );
+
+  test("stops pagination when cancelled as a page finishes parsing", async () => {
+    const controller = new AbortController();
+    const requests: Request[] = [];
+    const provider = new VultrProvider({
+      api_key,
+      fetch: async (request) => {
+        requests.push(request);
+        const response = json({
+          instances: [instance()],
+          meta: { links: { next: "second-page" } },
+        });
+        const parse = response.json.bind(response);
+        Object.defineProperty(response, "json", {
+          value: async () => {
+            const page: unknown = await parse();
+            controller.abort();
+            return page;
+          },
+        });
+        return response;
+      },
+    });
+
+    await expect(
+      provider.listInstances({ signal: controller.signal }),
+    ).rejects.toMatchObject({ code: "cancelled" });
+    expect(requests).toHaveLength(1);
+  });
+
+  test("forwards cancellation to later pages without requesting another page", async () => {
+    const controller = new AbortController();
+    const second_page = Promise.withResolvers<void>();
+    const requests: Request[] = [];
+    const provider = new VultrProvider({
+      api_key,
+      fetch: async (request) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return json({
+            instances: [instance()],
+            meta: { links: { next: "second-page" } },
+          });
+        }
+        second_page.resolve();
+        return new Promise((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(new Error(`Aborted ${api_key}`)),
+            { once: true },
+          );
+        });
+      },
+    });
+    const result = provider
+      .listInstances({ signal: controller.signal })
+      .catch((error: unknown) => error);
+    await second_page.promise;
+    controller.abort();
+
+    expect(await result).toMatchObject({ code: "cancelled" });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.signal.aborted).toBe(true);
+  });
+
+  test.each(["success", "http_error", "invalid_json", "network_error"])(
+    "removes the external abort listener after %s",
+    async (outcome) => {
+      const controller = new AbortController();
+      const requests: Request[] = [];
+      const provider = new VultrProvider({
+        api_key,
+        fetch: async (request) => {
+          requests.push(request);
+          if (outcome === "network_error") throw new Error("Network failure");
+          if (outcome === "http_error") return json({ error: "Denied" }, 401);
+          if (outcome === "invalid_json") return new Response("invalid");
+          return json({ account: account() });
+        },
+      });
+      await provider
+        .getAccountMetadata({ signal: controller.signal })
+        .catch(() => undefined);
+      controller.abort();
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.signal.aborted).toBe(false);
+    },
+  );
+
+  test("keeps a read timeout separate from caller cancellation and never retries", async () => {
+    const controller = new AbortController();
+    let request_count = 0;
+    const provider = new VultrProvider({
+      api_key,
+      timeout_ms: 5,
+      fetch: (request) => {
+        request_count += 1;
+        return new Promise((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(new Error(`Timed out ${api_key}`)),
+            { once: true },
+          );
+        });
+      },
+    });
+    const error = await provider
+      .getAccountMetadata({ signal: controller.signal })
+      .catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ code: "network_error" });
+    expect(String(error)).toContain("timed out");
+    expect(String(error)).not.toContain(api_key);
+    expect(String(error)).not.toContain("may have succeeded");
+    expect(controller.signal.aborted).toBe(false);
+    expect(request_count).toBe(1);
+  });
+});
+
 describe("Vultr validation and errors", () => {
   test.each(["", ".", "..", "a/../b", "a/b", "a\\b", "a b", "a\nb", "a%2Fb"])(
     "rejects unsafe instance ID %j before sending a request",

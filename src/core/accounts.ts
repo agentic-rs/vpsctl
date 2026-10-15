@@ -6,6 +6,31 @@ import { z } from "zod";
 import { AppError } from "./errors.ts";
 
 const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
+const account_email = z
+  .email({ pattern: z.regexes.html5Email })
+  .max(254)
+  .refine((email) => {
+    const local_part = email.slice(0, email.indexOf("@"));
+    return (
+      local_part.length <= 64 &&
+      !local_part.startsWith(".") &&
+      !local_part.endsWith(".") &&
+      !local_part.includes("..") &&
+      !email.includes("/")
+    );
+  });
+const account_identifier = z
+  .string()
+  .max(319)
+  .refine((id) => {
+    if (identifier.safeParse(id).success) return true;
+    const separator = id.indexOf(":");
+    return (
+      separator > 0 &&
+      identifier.safeParse(id.slice(0, separator)).success &&
+      account_email.safeParse(id.slice(separator + 1)).success
+    );
+  });
 const credential_schema = z.discriminatedUnion("source", [
   z.strictObject({
     source: z.literal("env"),
@@ -16,17 +41,25 @@ const credential_schema = z.discriminatedUnion("source", [
     value: z.string().refine((value) => value.trim().length > 0),
   }),
 ]);
-const account_schema = z.strictObject({
-  id: identifier,
-  provider_id: identifier,
-  credentials: z
-    .record(z.string().min(1), credential_schema)
-    .refine((credentials) => Object.keys(credentials).length > 0),
-});
+const credentials_schema = z
+  .record(z.string().min(1), credential_schema)
+  .refine((credentials) => Object.keys(credentials).length > 0);
+const account_schema = z
+  .strictObject({
+    id: account_identifier,
+    provider_id: identifier,
+    credentials: credentials_schema,
+  })
+  .refine(
+    (account) =>
+      !account.id.includes(":") ||
+      account.id.startsWith(`${account.provider_id}:`),
+    "Account ID provider must match its configured provider.",
+  );
 const config_schema = z
   .strictObject({
     version: z.literal(1),
-    default_account_id: identifier.optional(),
+    default_account_id: account_identifier.optional(),
     accounts: z.array(account_schema),
   })
   .superRefine((config, context) => {
@@ -47,13 +80,28 @@ export type Account = z.infer<typeof account_schema>;
 export type AccountConfig = z.infer<typeof config_schema>;
 
 export function validateAccountId(id: string): string {
-  if (!identifier.safeParse(id).success) {
+  if (!account_identifier.safeParse(id).success) {
     throw new AppError(
       "invalid_input",
-      "Account names must be 1–64 letters, digits, underscores, or hyphens, beginning with a letter or digit.",
+      "Account IDs must be provider:email or 1–64 letters, digits, underscores, or hyphens, beginning with a letter or digit.",
     );
   }
   return id;
+}
+
+/** Derive an account ID from verified metadata, preserving the email's case. */
+export function deriveAccountId(provider_id: string, email: string): string {
+  if (!identifier.safeParse(provider_id).success) {
+    throw new AppError("invalid_input", "Invalid provider ID.");
+  }
+  const verified_email = email.trim();
+  if (!account_email.safeParse(verified_email).success) {
+    throw new AppError(
+      "invalid_input",
+      "A valid account email is required to derive its account ID.",
+    );
+  }
+  return `${provider_id}:${verified_email}`;
 }
 
 function parseAccount(value: unknown): Account {
@@ -120,7 +168,18 @@ export function resolveCredentials(
   env: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> {
   const validated_account = parseAccount(account);
-  const entries = Object.entries(validated_account.credentials).map(
+  return resolveCredentialReferences(validated_account.credentials, env);
+}
+
+export function resolveCredentialReferences(
+  credentials: Account["credentials"],
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const validated_credentials = credentials_schema.safeParse(credentials);
+  if (!validated_credentials.success) {
+    throw new AppError("invalid_input", "Invalid credential configuration.");
+  }
+  const entries = Object.entries(validated_credentials.data).map(
     ([field, reference]) => {
       if (reference.source === "literal") return [field, reference.value];
       const value = Object.hasOwn(env, reference.name)

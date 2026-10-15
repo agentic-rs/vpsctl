@@ -100,13 +100,26 @@ export class VultrTransport {
     method: Method = "GET",
     body?: Record<string, unknown>,
     expects_json = true,
+    signal?: AbortSignal,
   ): Promise<unknown> {
+    if (signal?.aborted) {
+      throw new AppError("cancelled", "Operation cancelled.");
+    }
     const mutating = method !== "GET";
     const retry_advice = mutating
       ? " The request may have succeeded; verify the instance state before retrying."
       : "";
     const controller = new AbortController();
     let timed_out = false;
+    let cancelled = false;
+    const cancel = () => {
+      if (!timed_out) cancelled = true;
+      controller.abort();
+    };
+    const throwIfCancelled = () => {
+      if (cancelled) throw new AppError("cancelled", "Operation cancelled.");
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
     const timeout = setTimeout(() => {
       timed_out = true;
       controller.abort();
@@ -130,6 +143,7 @@ export class VultrTransport {
       try {
         response = await this.#fetch(request);
       } catch {
+        throwIfCancelled();
         const reason = timed_out
           ? "timed out"
           : "failed due to a network error";
@@ -138,10 +152,12 @@ export class VultrTransport {
           `Vultr request ${reason}.${retry_advice}`,
         );
       }
+      throwIfCancelled();
 
       if (!response.ok) {
         const advice = response.status >= 500 ? retry_advice : "";
         const detail = await errorDetail(response, this.#api_key);
+        throwIfCancelled();
         throw new AppError(
           errorCode(response.status, detail),
           `${errorMessage(response.status, detail)}${advice}`,
@@ -150,8 +166,11 @@ export class VultrTransport {
       }
       if (!expects_json) return undefined;
       try {
-        return await response.json();
+        const result: unknown = await response.json();
+        throwIfCancelled();
+        return result;
       } catch {
+        throwIfCancelled();
         throw new AppError(
           "invalid_response",
           `Vultr returned an invalid JSON response.${retry_advice}`,
@@ -159,6 +178,7 @@ export class VultrTransport {
       }
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", cancel);
     }
   }
 }

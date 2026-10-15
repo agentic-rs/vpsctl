@@ -233,7 +233,7 @@ describe("local accounts and account routing", () => {
     );
     expect(result.exit_code).toBe(0);
     expect(result.secret_prompts).toHaveLength(1);
-    expect(result.secret_prompts[0]).toContain("api_key");
+    expect(result.secret_prompts[0]).toContain("API key");
     expect(result.stdin_reads).toBe(0);
     expect(result.stdout).not.toContain(secret);
     expect(result.stderr).not.toContain(secret);

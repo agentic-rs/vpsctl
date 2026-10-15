@@ -14,8 +14,11 @@ import {
   type Account,
   AccountStore,
   defaultConfigPath,
+  deriveAccountId,
   resolveAccount,
+  resolveCredentialReferences,
   resolveCredentials,
+  validateAccountId,
 } from "../src/core/accounts.ts";
 import { AppError } from "../src/core/errors.ts";
 
@@ -45,6 +48,93 @@ afterEach(async () => {
       .splice(0)
       .map((path) => rm(path, { recursive: true, force: true })),
   );
+});
+
+describe("account IDs", () => {
+  test("derives provider and email IDs while preserving email identity", () => {
+    expect(
+      deriveAccountId("vultr", "  Ops.Name+cloud%work@example.com  "),
+    ).toBe("vultr:Ops.Name+cloud%work@example.com");
+    expect(
+      deriveAccountId("future_provider", "O'Neil@accounts.example.com"),
+    ).toBe("future_provider:O'Neil@accounts.example.com");
+    expect(deriveAccountId("vultr", "Ops@example.com")).not.toBe(
+      deriveAccountId("vultr", "ops@example.com"),
+    );
+  });
+
+  test("accepts legacy aliases and composite IDs longer than legacy aliases", () => {
+    for (const id of ["work", "Work_2-personal", "a".repeat(64)]) {
+      expect(validateAccountId(id)).toBe(id);
+    }
+    const email = `${"a".repeat(64)}@${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+    expect(email).toHaveLength(254);
+    const id = deriveAccountId("v".repeat(64), email);
+    expect(id).toHaveLength(319);
+    expect(validateAccountId(id)).toBe(id);
+  });
+
+  test("rejects malformed and unsafe account IDs", () => {
+    const invalid_ids = [
+      "",
+      "a".repeat(65),
+      "../work",
+      "work personal",
+      "work\n",
+      "work\t",
+      "a:b",
+      ":user@example.com",
+      "invalid/provider:user@example.com",
+      `${"v".repeat(65)}:user@example.com`,
+      "vultr:user@example.com:other",
+      "vultr:user@example.com\n",
+      " vultr:user@example.com",
+      "vultr:user name@example.com",
+      "vultr:user\u0000@example.com",
+      "vultr:user/name@example.com",
+      "vultr:user\\name@example.com",
+      "vultr:.user@example.com",
+      "vultr:user.@example.com",
+      "vultr:user..name@example.com",
+      "vultr:user@-example.com",
+      "vultr:user@example-.com",
+      "vultr:user@exa_mple.com",
+      `vultr:${"a".repeat(65)}@example.com`,
+      `vultr:user@${"a".repeat(64)}.com`,
+      `vultr:${"a".repeat(64)}@${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(62)}`,
+    ];
+    for (const id of invalid_ids) {
+      expect(() => validateAccountId(id)).toThrow(AppError);
+    }
+  });
+
+  test("requires valid provider and email metadata to derive an ID", () => {
+    for (const provider_id of [
+      "",
+      "vultr:other",
+      "../vultr",
+      "vultr\n",
+      "v".repeat(65),
+    ]) {
+      expect(() => deriveAccountId(provider_id, "user@example.com")).toThrow(
+        "Invalid provider ID.",
+      );
+    }
+    for (const email of [
+      "",
+      "  ",
+      "user",
+      "user name@example.com",
+      "user\nname@example.com",
+      "user/name@example.com",
+      "user..name@example.com",
+      `${"u".repeat(65)}@example.com`,
+    ]) {
+      expect(() => deriveAccountId("vultr", email)).toThrow(
+        "A valid account email is required",
+      );
+    }
+  });
 });
 
 describe("AccountStore", () => {
@@ -94,6 +184,46 @@ describe("AccountStore", () => {
     });
     expect(await readFile(config_path, "utf8")).toBe(original);
     expect(await readdir(join(config_path, ".."))).toEqual(["config.json"]);
+  });
+
+  test("persists, selects, renews, and removes provider and email IDs alongside legacy aliases", async () => {
+    const { store, config_path } = await fixture();
+    const id = deriveAccountId("vultr", "Ops.Name+team@example.com");
+    const derived = account(id);
+    const personal = account("personal", "VULTR_PERSONAL_TOKEN");
+    const other_provider: Account = {
+      ...account(
+        deriveAccountId("future_provider", "Ops.Name+team@example.com"),
+      ),
+      provider_id: "future_provider",
+    };
+    await store.add(derived);
+    await store.add(personal);
+    await store.add(other_provider);
+    await store.use(id);
+    const reopened = new AccountStore(config_path);
+    const saved = await reopened.read();
+    expect(saved).toEqual({
+      version: 1,
+      default_account_id: id,
+      accounts: [derived, personal, other_provider],
+    });
+    expect(resolveAccount(saved)).toEqual(derived);
+    expect(resolveAccount(saved, "personal")).toEqual(personal);
+    expect(resolveAccount(saved, other_provider.id)).toEqual(other_provider);
+    expect(() => resolveAccount(saved, id.toLowerCase())).toThrow(
+      "Account not found.",
+    );
+    const renewed = account(id, "VULTR_RENEWED_TOKEN");
+    expect(await reopened.save(renewed)).toEqual({
+      ...saved,
+      accounts: [renewed, personal, other_provider],
+    });
+    expect(await reopened.remove(id)).toEqual({
+      version: 1,
+      accounts: [personal, other_provider],
+    });
+    expect((await store.read()).default_account_id).toBeUndefined();
   });
 
   test("saves a new account in a private configuration file without selecting a default", async () => {
@@ -163,6 +293,10 @@ describe("AccountStore", () => {
       { ...account("work"), id: "../work" },
       { ...account("work"), id: "a".repeat(65) },
       { ...account("work"), provider_id: "invalid/provider" },
+      { ...account("work"), provider_id: "vultr:user@example.com" },
+      { ...account("work"), provider_id: "v".repeat(65) },
+      { ...account("vultr:user@example.com"), provider_id: "other_provider" },
+      { ...account("vultr:user@example.com"), provider_id: "Vultr" },
       { ...account("work"), credentials: {} },
       {
         ...account("work"),
@@ -280,6 +414,20 @@ describe("AccountStore", () => {
       { version: 1, accounts: [], unknown: true },
       {
         version: 1,
+        accounts: [account("vultr:user@example.com")],
+        default_account_id: "vultr:user@example.com\n",
+      },
+      {
+        version: 1,
+        accounts: [
+          {
+            ...account("vultr:user@example.com"),
+            provider_id: "other_provider",
+          },
+        ],
+      },
+      {
+        version: 1,
         accounts: [
           {
             ...account("work"),
@@ -376,6 +524,47 @@ describe("AccountStore", () => {
 });
 
 describe("credential resolution", () => {
+  test("resolves credential references before an account ID is known", () => {
+    expect(
+      resolveCredentialReferences(
+        {
+          api_key: { source: "literal", value: "  local-secret  " },
+          api_secret: { source: "env", name: "PROVIDER_SECRET" },
+        },
+        { PROVIDER_SECRET: "env-secret" },
+      ),
+    ).toEqual({ api_key: "  local-secret  ", api_secret: "env-secret" });
+    expect(() =>
+      resolveCredentialReferences(
+        { api_key: { source: "env", name: "PROVIDER_SECRET" } },
+        {},
+      ),
+    ).toThrow("Missing credential environment variable: PROVIDER_SECRET.");
+  });
+
+  test("rejects malformed direct references with a secret-free error", () => {
+    const malformed_references: unknown[] = [
+      {},
+      { api_key: { source: "literal", value: "   " } },
+      {
+        api_key: {
+          source: "literal",
+          value: "private-value",
+          unexpected: true,
+        },
+      },
+      { api_key: { source: "unsupported", value: "private-value" } },
+      { api_key: { source: "env", name: "invalid-private-value" } },
+    ];
+    for (const credentials of malformed_references) {
+      expect(() =>
+        resolveCredentialReferences(credentials as Account["credentials"], {}),
+      ).toThrow(
+        new AppError("invalid_input", "Invalid credential configuration."),
+      );
+    }
+  });
+
   test("resolves a mixture of literal and environment credentials", () => {
     const mixed: Account = {
       id: "mixed",

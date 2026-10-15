@@ -10,32 +10,38 @@ Requires Bun 1.3.13 or newer.
 bun install
 bun run dev --help
 
-# Prompts for an API key, verifies instance access, then saves the account.
-bun run dev login personal
+# Choose a provider and enter an API key to verify and save the account.
+bun run dev login
+
+# An explicit alias is also supported.
 bun run dev login work
-bun run dev account use personal
 
 bun run dev account list
+# Choose an account interactively if no account or default is selected.
 bun run dev instance list
 bun run dev --account work instance list
 bun run dev --json instance list --all-accounts
-bun run dev --account personal account info
+bun run dev --account 'vultr:you@example.com' account info
 bun run dev --json account info --all-accounts
 ```
 
 API keys are entered with a masked prompt. Local account configuration stores them as plaintext with owner-only file permissions (`0600`). Account listings redact stored secrets. The configuration contains credentials, so keep it out of version control.
 
-`login NAME` verifies credentials with a read-only instance listing before saving them. Run `login` without a name to enter it interactively. New accounts default to Vultr; use `--provider` to select another registered provider. Logging into an existing name refreshes its credentials while preserving the default selection and other accounts. Failed verification leaves the saved configuration unchanged. Login reports the instance count without printing inventory or credentials.
+`login` uses [Clack](https://bomb.sh/docs/clack/packages/prompts/) for provider selection, masked credential entry, verification progress, and a success summary. When an ID is omitted, it queries provider metadata and saves the account as `provider:email`, for example `vultr:you@example.com`. The email comes from the verified provider response. Credentials must also have permission to list instances. Use `--provider vultr` to skip provider selection; noninteractive login defaults to Vultr.
+
+`login NAME` preserves explicit aliases such as `work` and verifies them with a read-only instance listing. An explicit `provider:email` ID must match the verified email. Logging into the same ID refreshes its credentials while preserving the default selection and other accounts. Existing aliases are retained. Failed verification or cancellation before saving leaves the configuration unchanged. Login reports the instance count without printing inventory or credentials.
 
 `account add NAME --provider vultr` remains available for offline registration without verification. Both commands support `--credentials-stdin` and `--credential` environment references.
 
-Account selection follows `--account`, then `VPS_CTL_ACCOUNT`, then the saved default. Adding an account does not implicitly set the default. `--all-accounts` requires neither `--account` nor `VPS_CTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
+Account selection follows `--account`, then `VPS_CTL_ACCOUNT`, then the saved default. If none is set, interactive commands offer an account picker for that invocation. Use `account use ID` to save a default. Adding an account or choosing one in the picker does not set the default. Noninteractive commands and `--json` require an explicit, environment, or saved selection. `--all-accounts` bypasses the picker and cannot be combined with `--account` or `VPS_CTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
+
+Prompts and guided status messages go to stderr, leaving stdout available for command results. JSON output has no guided decorations or selection prompts. Cancelling a prompt or login verification exits with code 130.
 
 ## Account metadata
 
 `account info` queries live provider metadata for the selected account. `account info --all-accounts` queries every configured account independently and retains successful results if another account fails. `account list` remains a local configuration listing without network requests.
 
-For Vultr, metadata includes name, email, balance, pending charges, last payment date and amount, USD currency, and account permissions (`acls`). Amounts retain the signed values reported by Vultr, without rounding or calculating an available balance. JSON output retains the full normalized record and associates each result with its local account name. Metadata is fetched on demand and is not saved into the account configuration. Providers that lack this capability report `unsupported_operation`.
+For Vultr, metadata includes name, email, balance, pending charges, last payment date and amount, USD currency, and account permissions (`acls`). Amounts retain the signed values reported by Vultr, without rounding or calculating an available balance. JSON output retains the full normalized record and associates each result with its local account ID. Metadata is fetched on demand and is not saved into the account configuration. Providers that lack this capability report `unsupported_operation`.
 
 ## Discover and manage instances
 
@@ -46,23 +52,23 @@ bun run dev catalog images
 bun run dev catalog ssh-keys
 
 # Replace REGION_ID, PLAN_ID, OS_ID, and SSH_KEY_ID with catalog results.
-bun run dev --account personal instance create \
+bun run dev --account work instance create \
   --region REGION_ID --plan PLAN_ID --image OS_ID \
   --label web-1 --hostname web-1 --ssh-key SSH_KEY_ID \
   --tag web --enable-ipv6 --dry-run
 
 # Run the same command without --dry-run to review and confirm interactively.
 # "buy" is an alias for "create".
-bun run dev --account personal instance get INSTANCE_ID
-bun run dev --account personal instance start INSTANCE_ID
-bun run dev --account personal instance stop INSTANCE_ID
-bun run dev --account personal instance reboot INSTANCE_ID
+bun run dev --account work instance get INSTANCE_ID
+bun run dev --account work instance start INSTANCE_ID
+bun run dev --account work instance stop INSTANCE_ID
+bun run dev --account work instance reboot INSTANCE_ID
 
-bun run dev --account personal instance edit INSTANCE_ID --label web-2
-bun run dev --account personal instance edit INSTANCE_ID --tag web --tag production
-bun run dev --account personal instance edit INSTANCE_ID --clear-tags
-bun run dev --account personal instance edit INSTANCE_ID --plan NEW_PLAN_ID
-bun run dev --account personal instance destroy INSTANCE_ID --dry-run
+bun run dev --account work instance edit INSTANCE_ID --label web-2
+bun run dev --account work instance edit INSTANCE_ID --tag web --tag production
+bun run dev --account work instance edit INSTANCE_ID --clear-tags
+bun run dev --account work instance edit INSTANCE_ID --plan NEW_PLAN_ID
+bun run dev --account work instance destroy INSTANCE_ID --dry-run
 ```
 
 Every instance mutation supports `--dry-run` and `--yes`. Previews show the account, operation, input, and relevant effects without loading credentials or contacting the provider. They do not validate live capacity or provider-side restrictions. Interactive changes require confirmation; scripts must pass `--yes`. Operations return once the API accepts them; use `instance get` to inspect subsequent progress.
@@ -80,10 +86,10 @@ The default path is `$XDG_CONFIG_HOME/vps-ctl/config.json`, falling back to `~/.
 ```json
 {
   "version": 1,
-  "default_account_id": "personal",
+  "default_account_id": "vultr:you@example.com",
   "accounts": [
     {
-      "id": "personal",
+      "id": "vultr:you@example.com",
       "provider_id": "vultr",
       "credentials": {
         "api_key": {
@@ -96,7 +102,7 @@ The default path is `$XDG_CONFIG_HOME/vps-ctl/config.json`, falling back to `~/.
 }
 ```
 
-For scripts, `login NAME --credentials-stdin` reads a JSON object such as `{"api_key":"YOUR_API_KEY"}` from stdin and verifies it before saving. Use `account add NAME --provider vultr --credentials-stdin` for offline registration. Credential values are not accepted as command-line flags.
+For scripts, `login --provider vultr --credentials-stdin` reads a JSON object such as `{"api_key":"YOUR_API_KEY"}` from stdin, verifies access, and derives the ID from the email. Add an explicit ID to retain a custom alias. Use `account add NAME --provider vultr --credentials-stdin` for offline registration. Credential values are not accepted as command-line flags.
 
 Environment variable references are also available:
 
@@ -109,7 +115,7 @@ An environment reference is stored as `{"source":"env","name":"VULTR_CI_API_KEY"
 
 ## Login troubleshooting
 
-If the error says **Unauthorized IP address**, add the exact address reported by Vultr to **API Access Control** for that user or account, then run `bun run dev login NAME` again. The CLI recognizes this restriction in HTTP `401` or `403` responses and classifies it as `forbidden`. Use a single-host entry (`/32` for IPv4 or `/128` for IPv6). A terminal using a VPN or proxy may have a different outbound address from your browser, so use the address Vultr reports for the failed request.
+If the error says **Unauthorized IP address**, add the exact address reported by Vultr to **API Access Control** for that user or account, then run `bun run dev login` again. The CLI recognizes this restriction in HTTP `401` or `403` responses and classifies it as `forbidden`. Use a single-host entry (`/32` for IPv4 or `/128` for IPv6). A terminal using a VPN or proxy may have a different outbound address from your browser, so use the address Vultr reports for the failed request.
 
 For other HTTP `401` errors, check the provider's error detail. Paste the complete API key value, rather than its name, ID, or masked display value, without quotes or a `Bearer` prefix. For a newly generated IAM key, complete **Finalize Key Generation** in the Vultr Console after copying it. Confirm the key is still active and has not expired. Failed login attempts do not save the rejected key.
 

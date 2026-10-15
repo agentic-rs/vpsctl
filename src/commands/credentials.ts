@@ -86,7 +86,9 @@ export async function readCredentials(
       field,
       {
         source: "literal" as const,
-        value: await io.read_secret(`${definition.info.id} ${field}`),
+        value: await io.read_secret(
+          `${definition.info.name} ${field === "api_key" ? "API key" : field.replaceAll("_", " ")}`,
+        ),
       },
     ]);
   }

@@ -9,6 +9,7 @@ import type {
   Plan,
   Provider,
   ProviderInfo,
+  ProviderRequestOptions,
   Region,
   SshKey,
 } from "../../core/provider.ts";
@@ -67,8 +68,16 @@ export class VultrProvider implements Provider {
     this.#transport = new VultrTransport(options);
   }
 
-  async getAccountMetadata(): Promise<AccountMetadata> {
-    const response = await this.#transport.request("/account");
+  async getAccountMetadata(
+    options?: ProviderRequestOptions,
+  ): Promise<AccountMetadata> {
+    const response = await this.#transport.request(
+      "/account",
+      "GET",
+      undefined,
+      true,
+      options?.signal,
+    );
     const result = validateResponse(
       z.object({ account: account_schema }),
       response,
@@ -76,10 +85,15 @@ export class VultrProvider implements Provider {
     return normalizeAccountMetadata(result.account);
   }
 
-  async listInstances(): Promise<Instance[]> {
-    return (await this.#list("/instances", "instances", instance_schema)).map(
-      normalizeInstance,
-    );
+  async listInstances(options?: ProviderRequestOptions): Promise<Instance[]> {
+    return (
+      await this.#list(
+        "/instances",
+        "instances",
+        instance_schema,
+        options?.signal,
+      )
+    ).map(normalizeInstance);
   }
 
   async getInstance(id: string): Promise<Instance> {
@@ -161,6 +175,7 @@ export class VultrProvider implements Provider {
     path: string,
     field: string,
     schema: z.ZodType<T>,
+    signal?: AbortSignal,
   ): Promise<T[]> {
     const items: T[] = [];
     const seen_cursors = new Set<string>();
@@ -169,7 +184,13 @@ export class VultrProvider implements Provider {
     while (true) {
       const query = new URLSearchParams({ per_page: "500" });
       if (cursor !== undefined) query.set("cursor", cursor);
-      const response = await this.#transport.request(`${path}?${query}`);
+      const response = await this.#transport.request(
+        `${path}?${query}`,
+        "GET",
+        undefined,
+        true,
+        signal,
+      );
       const page = validateResponse(
         z.record(z.string(), z.unknown()),
         response,

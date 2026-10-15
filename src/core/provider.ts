@@ -63,6 +63,10 @@ export interface AccountMetadata {
   acls: string[];
 }
 
+export interface ProviderRequestOptions {
+  signal?: AbortSignal;
+}
+
 export interface CreateInstanceInput {
   region_id: string;
   plan_id: string;
@@ -89,8 +93,10 @@ export interface ProviderInfo {
 
 export interface Provider {
   readonly info: ProviderInfo;
-  getAccountMetadata?(): Promise<AccountMetadata>;
-  listInstances(): Promise<Instance[]>;
+  getAccountMetadata?(
+    options?: ProviderRequestOptions,
+  ): Promise<AccountMetadata>;
+  listInstances(options?: ProviderRequestOptions): Promise<Instance[]>;
   getInstance(id: string): Promise<Instance>;
   createInstance(input: CreateInstanceInput): Promise<Instance>;
   editInstance(id: string, input: EditInstanceInput): Promise<Instance>;
