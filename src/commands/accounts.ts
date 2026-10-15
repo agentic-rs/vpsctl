@@ -1,8 +1,11 @@
-import type { Account } from "../core/accounts.ts";
-import { AppError } from "../core/errors.ts";
+import { type Account, validateAccountId } from "../core/accounts.ts";
 import type { CliCommand } from "./command.ts";
 import type { CommandContext } from "./context.ts";
-import { collect, credentialsFromFlags } from "./input.ts";
+import {
+  type CredentialOptions,
+  readCredentials,
+  withCredentialOptions,
+} from "./credentials.ts";
 
 export function registerAccountCommands(
   program: CliCommand,
@@ -51,89 +54,21 @@ export function registerAccountCommands(
       })),
     );
   });
-  const account_add = accounts
-    .command("add <id>")
-    .description("Register an account; prompts for credentials by default")
-    .requiredOption("--provider <id>", "Registered provider ID")
-    .option(
-      "--credential <field=ENV_VAR>",
-      "Use an environment variable reference; repeat for more fields",
-      collect,
-      [],
-    )
-    .option(
-      "--credentials-stdin",
-      "Read a JSON object of credential field/value pairs from stdin",
-    );
+  const account_add = withCredentialOptions(
+    accounts
+      .command("add <id>")
+      .description("Register an account; prompts for credentials by default")
+      .requiredOption("--provider <id>", "Registered provider ID"),
+  );
   account_add.action(async (id: string) => {
-    const flags = account_add.opts<{
-      provider: string;
-      credential: string[];
-      credentials_stdin?: boolean;
-    }>();
+    validateAccountId(id);
+    const flags = account_add.opts<CredentialOptions & { provider: string }>();
     const definition = registry.get(flags.provider);
-    let credentials: Account["credentials"];
-    if (flags.credentials_stdin) {
-      if (flags.credential.length > 0)
-        throw new AppError(
-          "invalid_input",
-          "Use --credential or --credentials-stdin, not both.",
-        );
-      if (!io.read_stdin)
-        throw new AppError(
-          "invalid_input",
-          "Credential stdin input is unavailable.",
-        );
-      let values: unknown;
-      try {
-        values = JSON.parse(await io.read_stdin());
-      } catch {
-        throw new AppError(
-          "invalid_input",
-          "Credentials must be a JSON object of field/value pairs.",
-        );
-      }
-      if (
-        !values ||
-        typeof values !== "object" ||
-        Array.isArray(values) ||
-        Object.values(values).some(
-          (value) => typeof value !== "string" || !value.trim(),
-        )
-      ) {
-        throw new AppError(
-          "invalid_input",
-          "Credentials must be a JSON object of nonempty string values.",
-        );
-      }
-      credentials = Object.fromEntries(
-        Object.entries(values).map(([field, value]) => [
-          field,
-          { source: "literal", value: value as string },
-        ]),
-      );
-    } else if (flags.credential.length > 0) {
-      credentials = credentialsFromFlags(flags.credential);
-    } else {
-      if (!io.is_interactive || !io.read_secret) {
-        throw new AppError(
-          "invalid_input",
-          "Account setup needs an interactive terminal, --credentials-stdin, or --credential field=ENV_VAR.",
-        );
-      }
-      const entries = [];
-      for (const field of definition.credential_fields) {
-        entries.push([
-          field,
-          {
-            source: "literal" as const,
-            value: await io.read_secret(`${flags.provider} ${field}`),
-          },
-        ]);
-      }
-      credentials = Object.fromEntries(entries);
-    }
-    const account: Account = { id, provider_id: flags.provider, credentials };
+    const account: Account = {
+      id,
+      provider_id: flags.provider,
+      credentials: await readCredentials(definition, io, flags),
+    };
     registry.validateAccount(account);
     await storeFor(account_add).add(account);
     print(account_add, "account.add", { id, provider_id: account.provider_id });

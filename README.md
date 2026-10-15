@@ -10,9 +10,9 @@ Requires Bun 1.3.13 or newer.
 bun install
 bun run dev --help
 
-# Prompts for an API key and stores it in the local account configuration.
-bun run dev account add personal --provider vultr
-bun run dev account add work --provider vultr
+# Prompts for an API key, verifies instance access, then saves the account.
+bun run dev login personal
+bun run dev login work
 bun run dev account use personal
 
 bun run dev account list
@@ -22,6 +22,10 @@ bun run dev --json instance list --all-accounts
 ```
 
 API keys are entered with a masked prompt. Local account configuration stores them as plaintext with owner-only file permissions (`0600`). Account listings redact stored secrets. The configuration contains credentials, so keep it out of version control.
+
+`login NAME` verifies credentials with a read-only instance listing before saving them. Run `login` without a name to enter it interactively. New accounts default to Vultr; use `--provider` to select another registered provider. Logging into an existing name refreshes its credentials while preserving the default selection and other accounts. Failed verification leaves the saved configuration unchanged. Login reports the instance count without printing inventory or credentials.
+
+`account add NAME --provider vultr` remains available for offline registration without verification. Both commands support `--credentials-stdin` and `--credential` environment references.
 
 Account selection follows `--account`, then `VPS_CTL_ACCOUNT`, then the saved default. Adding an account does not implicitly set the default. `--all-accounts` requires neither `--account` nor `VPS_CTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
 
@@ -84,12 +88,12 @@ The default path is `$XDG_CONFIG_HOME/vps-ctl/config.json`, falling back to `~/.
 }
 ```
 
-For scripts, `account add NAME --provider vultr --credentials-stdin` reads a JSON object such as `{"api_key":"YOUR_API_KEY"}` from stdin. Credential values are not accepted as command-line flags.
+For scripts, `login NAME --credentials-stdin` reads a JSON object such as `{"api_key":"YOUR_API_KEY"}` from stdin and verifies it before saving. Use `account add NAME --provider vultr --credentials-stdin` for offline registration. Credential values are not accepted as command-line flags.
 
 Environment variable references are also available:
 
 ```sh
-bun run dev account add ci --provider vultr --credential api_key=VULTR_CI_API_KEY
+bun run dev login ci --credential api_key=VULTR_CI_API_KEY
 bun run dev account remove ci
 ```
 

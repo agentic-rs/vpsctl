@@ -96,6 +96,56 @@ describe("AccountStore", () => {
     expect(await readdir(join(config_path, ".."))).toEqual(["config.json"]);
   });
 
+  test("saves a new account in a private configuration file without selecting a default", async () => {
+    const { store, config_path } = await fixture();
+    const work = account("work");
+    expect(await store.save(work)).toEqual({ version: 1, accounts: [work] });
+    expect(await new AccountStore(config_path).read()).toEqual({
+      version: 1,
+      accounts: [work],
+    });
+    expect((await stat(config_path)).mode & 0o777).toBe(0o600);
+  });
+
+  test("saves replacement credentials while preserving the default and unrelated accounts", async () => {
+    const { store, config_path } = await fixture();
+    const personal = account("personal", "VULTR_PERSONAL_TOKEN");
+    await store.add(account("work"));
+    await store.add(personal);
+    await store.use("work");
+    const renewed: Account = {
+      id: "work",
+      provider_id: "vultr",
+      credentials: {
+        api_key: { source: "literal", value: "renewed-local-credential" },
+      },
+    };
+    expect(await store.save(renewed)).toEqual({
+      version: 1,
+      default_account_id: "work",
+      accounts: [renewed, personal],
+    });
+    const saved = await new AccountStore(config_path).read();
+    expect(resolveCredentials(resolveAccount(saved), {})).toEqual({
+      api_key: "renewed-local-credential",
+    });
+    expect(saved.accounts).toEqual([renewed, personal]);
+    expect((await stat(config_path)).mode & 0o777).toBe(0o600);
+    expect(await readdir(join(config_path, ".."))).toEqual(["config.json"]);
+  });
+
+  test("refuses to change an existing account's provider without altering configuration", async () => {
+    const { store, config_path } = await fixture();
+    await store.add(account("work"));
+    await store.use("work");
+    const original = await readFile(config_path, "utf8");
+    await expect(
+      store.save({ ...account("work"), provider_id: "another_provider" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await readFile(config_path, "utf8")).toBe(original);
+    expect(await readdir(join(config_path, ".."))).toEqual(["config.json"]);
+  });
+
   test("removing the default clears selection without selecting another account", async () => {
     const { store } = await fixture();
     await store.add(account("work"));
@@ -136,6 +186,9 @@ describe("AccountStore", () => {
       await expect(store.add(invalid_account as Account)).rejects.toMatchObject(
         { code: "invalid_input" },
       );
+      await expect(
+        store.save(invalid_account as Account),
+      ).rejects.toMatchObject({ code: "invalid_input" });
     }
     expect(await Bun.file(config_path).exists()).toBe(false);
   });
@@ -249,6 +302,9 @@ describe("AccountStore", () => {
       await expect(store.add(account("new"))).rejects.toMatchObject({
         code: "invalid_input",
       });
+      await expect(store.save(account("new"))).rejects.toMatchObject({
+        code: "invalid_input",
+      });
       expect(await readFile(config_path, "utf8")).toBe(original);
       expect(await readdir(join(config_path, ".."))).toEqual(["config.json"]);
     }
@@ -260,6 +316,11 @@ describe("AccountStore", () => {
     const lock_path = `${config_path}.lock`;
     await writeFile(lock_path, "existing writer");
     await expect(store.add(account("personal"))).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(
+      store.save(account("work", "RENEWED_TOKEN")),
+    ).rejects.toMatchObject({
       code: "conflict",
     });
     expect(await readFile(lock_path, "utf8")).toBe("existing writer");

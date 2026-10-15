@@ -13,6 +13,7 @@ export interface CliIO {
   write_err(text: string): void;
   is_interactive: boolean;
   confirm(message: string): Promise<boolean>;
+  read_text?(message: string): Promise<string>;
   read_secret?(message: string): Promise<string>;
   read_stdin?(): Promise<string>;
 }

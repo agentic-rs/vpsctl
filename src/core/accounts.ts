@@ -46,6 +46,16 @@ export type CredentialReference = z.infer<typeof credential_schema>;
 export type Account = z.infer<typeof account_schema>;
 export type AccountConfig = z.infer<typeof config_schema>;
 
+export function validateAccountId(id: string): string {
+  if (!identifier.safeParse(id).success) {
+    throw new AppError(
+      "invalid_input",
+      "Account names must be 1–64 letters, digits, underscores, or hyphens, beginning with a letter or digit.",
+    );
+  }
+  return id;
+}
+
 function parseAccount(value: unknown): Account {
   const result = account_schema.safeParse(value);
   if (!result.success) {
@@ -161,6 +171,30 @@ export class AccountStore {
         );
       }
       return { ...config, accounts: [...config.accounts, validated_account] };
+    });
+  }
+
+  async save(account: Account): Promise<AccountConfig> {
+    const validated_account = parseAccount(account);
+    return this.update((config) => {
+      const existing = config.accounts.find(
+        ({ id }) => id === validated_account.id,
+      );
+      if (!existing) {
+        return { ...config, accounts: [...config.accounts, validated_account] };
+      }
+      if (existing.provider_id !== validated_account.provider_id) {
+        throw new AppError(
+          "conflict",
+          "An existing account's provider cannot be changed.",
+        );
+      }
+      return {
+        ...config,
+        accounts: config.accounts.map((entry) =>
+          entry.id === validated_account.id ? validated_account : entry,
+        ),
+      };
     });
   }
 

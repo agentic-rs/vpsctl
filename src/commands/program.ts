@@ -20,6 +20,7 @@ import type {
 import { nonblank } from "./input.ts";
 import { registerInstanceCommands } from "./instances.ts";
 import { default_io } from "./io.ts";
+import { registerLoginCommand } from "./login.ts";
 import { render } from "./output.ts";
 
 export type { CliIO, CliOptions } from "./context.ts";
@@ -160,6 +161,7 @@ export async function runCli(
     },
   };
   registerAccountCommands(program, context);
+  registerLoginCommand(program, context);
   registerCatalogCommands(program, context);
   registerInstanceCommands(program, context);
 
