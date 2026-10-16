@@ -127,6 +127,7 @@ Run `instance create` in a terminal to choose an account, machine, and image, th
 
 ```sh
 bun run dev instance create
+bun run dev instance create --dry-run
 bun run dev -a vultr instance create
 bun run dev -a runpod instance create --gpu-count 2
 bun run dev -a vast instance create --disk-gb 80
@@ -136,9 +137,9 @@ Vultr offers shared CPU, dedicated CPU, and GPU plans with current stock in the 
 
 Supplied flags are retained. The wizard prompts for missing fields and an instance label, and checks supplied plan/offer IDs against current discovery results. Machine options show hardware and prices; the final review includes the account, machine, image, sizing, supplied settings, advertised cost, and provider billing notes. Missing prices are shown as unavailable. Monthly and hourly costs remain in the units reported by the provider, without estimating monthly GPU charges. RunPod GPU prices exclude storage and other charges; advertised rates are not a price lock and capacity may change before creation.
 
-Guided creation uses read-only catalog requests before confirmation. Cancelling a prompt exits with code 130; declining final confirmation creates nothing. There is one create request after approval, without automatic retries. Prompts and the cost review go to stderr; stdout contains the result.
+Guided creation uses read-only catalog requests before confirmation. With `--dry-run`, the same wizard gathers missing fields and reviews advertised pricing, then prints the assembled request without asking for billable confirmation or creating an instance. Cancelling a prompt exits with code 130; declining final confirmation creates nothing. There is one create request after approval, without automatic retries. Prompts and the cost review go to stderr; stdout contains the result or dry-run preview.
 
-`--dry-run` stays offline and requires complete flags. `--yes`, `--json`, and noninteractive creation skip the wizard and require all provider-specific fields plus an explicit, environment, or default account selection. JSON creation requires `--yes` to create, or `--dry-run` to preview. SSH keys, tags, hostnames, ports, and other optional settings can still be supplied through the existing flags.
+`--yes`, `--json`, and noninteractive creation skip the wizard and require all provider-specific fields plus an explicit, environment, or default account selection. Dry runs in these modes remain offline and do not load credentials or query catalogs. JSON creation requires `--yes` to create, or `--dry-run` to preview. SSH keys, tags, hostnames, ports, and other optional settings can still be supplied through the existing flags.
 
 ```sh
 bun run dev spec list region
@@ -166,7 +167,7 @@ bun run dev --account work instance edit INSTANCE_ID --plan NEW_PLAN_ID
 bun run dev --account work instance destroy INSTANCE_ID --dry-run
 ```
 
-Every instance mutation supports `--dry-run` and `--yes`. Offline dry-run previews show the account, operation, input, and relevant effects without loading credentials or contacting the provider; they do not validate live capacity. Guided creation instead queries the provider to display available hardware and advertised pricing. Interactive changes require confirmation; scripts must pass `--yes`. Operations return once the API accepts them; use `instance get` to inspect subsequent progress.
+Every instance mutation supports `--dry-run` and `--yes`. Dry runs show the account, operation, input, and relevant effects without applying changes. Guided creation queries the provider to display available hardware and advertised pricing, including with `--dry-run`; all other dry runs stay offline without loading credentials or validating live capacity. Interactive changes require confirmation; scripts must pass `--yes`. Operations return once the API accepts them; use `instance get` to inspect subsequent progress.
 
 Editing sends only supplied fields. Tags replace the complete tag list; `--clear-tags` sends an empty list. Hostname is create-only because changing it can cause a Vultr OS reinstall. Vultr plan changes are subject to upgrade restrictions and can affect billing and availability. Plan region filters show supported locations rather than guaranteed current capacity.
 
@@ -176,7 +177,7 @@ This version provisions Vultr OS images through the instances API. Bare-metal pr
 
 ## GPU providers
 
-The GPU providers run containers. Pass a Docker image reference to `--image`; Vultr continues to use an OS catalog ID. Creation validates required and unsupported fields for the selected provider before confirmation, including `--dry-run`. These checks do not reserve capacity or verify live offer availability.
+The GPU providers run containers. Pass a Docker image reference to `--image`; Vultr continues to use an OS catalog ID. Creation validates required and unsupported fields for the selected provider before confirmation, including `--dry-run`. Offline validation does not verify live availability; guided creation also checks current catalog results. Neither flow reserves capacity.
 
 RunPod uses a GPU type from `spec list plan`. The initial adapter creates on-demand GPU Pods in Secure Cloud. Specify a label and container disk size; GPU count defaults to one and local persistent volume size defaults to zero; a nonzero volume must be at least 10 GB. An optional region passes the selected data center as a placement preference. GPU prices are hourly and do not include storage or other charges.
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PromptOption } from "../src/commands/context.ts";
@@ -159,6 +159,7 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
     const output: string[] = [];
     const errors: string[] = [];
     const notes: string[] = [];
+    const note_titles: string[] = [];
     const events: string[] = [];
     const text_prompts: string[] = [];
     const selections: { message: string; options: PromptOption[] }[] = [];
@@ -191,8 +192,9 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
           (message === "Docker image" ? "example/image:latest" : "")
         );
       },
-      note(message) {
+      note(message, title) {
         notes.push(message);
+        if (title) note_titles.push(title);
         events.push(message);
       },
       async confirm(message) {
@@ -211,6 +213,7 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
       stdout: output.join(""),
       stderr: errors.join(""),
       review: [...notes, ...errors].join("\n"),
+      note_titles,
       events,
       text_prompts,
       selections,
@@ -218,6 +221,7 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
     };
   };
   return {
+    config_path,
     run,
     creates,
     queries,
@@ -517,27 +521,133 @@ describe("guided instance creation", () => {
   });
 });
 
-describe("guided creation script safeguards", () => {
-  test("dry-run is offline and does not require the configured credential", async () => {
-    const setup = await fixture("vultr", { missing_credential: true });
-    const result = await setup.run([
-      "--dry-run",
-      "--region",
-      "test-region",
-      "--plan",
-      "shared-small",
-      "--image",
-      "101",
-    ]);
+describe("guided creation dry runs", () => {
+  for (const { provider_id, input, cost } of [
+    {
+      provider_id: "vultr",
+      input: {
+        region_id: "test-region",
+        plan_id: "shared-small",
+        image_id: "101",
+        label: "vpsctl-instance",
+      },
+      cost: "$ 6/month",
+    },
+    {
+      provider_id: "runpod",
+      input: {
+        gpu_count: 1,
+        disk_gb: 40,
+        volume_gb: 0,
+        plan_id: "gpu-example",
+        image_id: "example/image:latest",
+        label: "vpsctl-instance",
+      },
+      cost: "$ 0.75/hour",
+    },
+    {
+      provider_id: "vast",
+      input: {
+        disk_gb: 40,
+        offer_id: "321",
+        image_id: "example/image:latest",
+        label: "vpsctl-instance",
+      },
+      cost: "$ 0.75/hour",
+    },
+  ] as const) {
+    test(`${provider_id} guides selection and reviews cost without confirmation or creation`, async () => {
+      const setup = await fixture(provider_id);
+      const result = await setup.run(["--dry-run"]);
+
+      expect(result.exit_code).toBe(0);
+      expect(setup.connections).toBe(1);
+      expect(setup.queries).toHaveLength(1);
+      expect(result.selections.map((entry) => entry.message)).toContain(
+        "Choose a machine",
+      );
+      expect(result.text_prompts).toContain("Instance label");
+      expect(result.review).toContain(cost);
+      expect(result.review).toContain("Dry run: no instance will be created.");
+      expect(result.note_titles).toEqual(["Dry-run instance creation"]);
+      expect(result.stdout).toContain("action: instance.create");
+      expect(result.stdout).toContain("dry_run: true");
+      const input_line = result.stdout
+        .split("\n")
+        .find((line) => line.startsWith("input: "));
+      expect(JSON.parse(input_line?.slice("input: ".length) ?? "{}")).toEqual(
+        input,
+      );
+      expect(result.confirmations).toEqual([]);
+      expect(setup.creates).toEqual([]);
+    });
+  }
+
+  test("the account is chosen once and reused for dry-run discovery", async () => {
+    const setup = await fixture("vultr", { pick_account: true });
+    const result = await setup.run(["--dry-run"]);
     expect(result.exit_code).toBe(0);
-    expect(result.stdout).toContain("dry_run");
-    expect(setup.connections).toBe(0);
-    expect(setup.reads).toEqual([]);
-    expect(result.selections).toEqual([]);
-    expect(result.text_prompts).toEqual([]);
+    expect(
+      result.selections.filter(
+        (entry) => entry.message === "Choose an account",
+      ),
+    ).toHaveLength(1);
+    expect(result.review).toContain("Account: vultr");
+    expect(setup.connections).toBe(1);
+    expect(setup.queries).toHaveLength(1);
     expect(result.confirmations).toEqual([]);
     expect(setup.creates).toEqual([]);
   });
+
+  for (const prompt of [
+    "Choose an account",
+    "Choose a machine",
+    "Instance label",
+  ]) {
+    test(`cancelling dry-run ${prompt} leaves accounts and resources unchanged`, async () => {
+      const setup = await fixture("vultr", { pick_account: true });
+      const before = await readFile(setup.config_path, "utf8");
+      const result = await setup.run(["--dry-run"], { cancel_prompt: prompt });
+      expect(result.exit_code).toBe(130);
+      expect(result.stdout).not.toContain("dry_run: true");
+      expect(result.confirmations).toEqual([]);
+      expect(setup.creates).toEqual([]);
+      expect(await readFile(setup.config_path, "utf8")).toBe(before);
+    });
+  }
+});
+
+describe("guided creation script safeguards", () => {
+  for (const { label, flags, interactive } of [
+    { label: "noninteractive", flags: [], interactive: false },
+    { label: "JSON", flags: ["--json"], interactive: true },
+    { label: "--yes", flags: ["--yes"], interactive: true },
+  ]) {
+    test(`${label} dry-run is offline and does not require the configured credential`, async () => {
+      const setup = await fixture("vultr", { missing_credential: true });
+      const result = await setup.run(
+        [
+          "--dry-run",
+          ...flags,
+          "--region",
+          "test-region",
+          "--plan",
+          "shared-small",
+          "--image",
+          "101",
+        ],
+        { interactive },
+      );
+      expect(result.exit_code).toBe(0);
+      expect(result.stdout).toContain("dry_run");
+      expect(setup.connections).toBe(0);
+      expect(setup.reads).toEqual([]);
+      expect(result.selections).toEqual([]);
+      expect(result.text_prompts).toEqual([]);
+      expect(result.confirmations).toEqual([]);
+      expect(setup.creates).toEqual([]);
+    });
+  }
 
   for (const flags of [["--yes"], ["--json", "--yes"]]) {
     test(`${flags.join(" ")} stays fully flag-driven without discovery`, async () => {
@@ -591,7 +701,12 @@ describe("guided creation script safeguards", () => {
     expect(setup.creates).toEqual([]);
   });
 
-  for (const flags of [["--yes"], ["--json"], ["--dry-run"]]) {
+  for (const flags of [
+    ["--yes"],
+    ["--json"],
+    ["--dry-run", "--json"],
+    ["--dry-run", "--yes"],
+  ]) {
     test(`${flags.join(" ")} does not fill missing flags using prompts`, async () => {
       const setup = await fixture("runpod");
       const result = await setup.run(flags);
@@ -604,7 +719,12 @@ describe("guided creation script safeguards", () => {
     });
   }
 
-  for (const flags of [["--yes"], ["--dry-run"], ["--json", "--yes"]]) {
+  for (const flags of [
+    ["--yes"],
+    ["--dry-run", "--yes"],
+    ["--dry-run", "--json"],
+    ["--json", "--yes"],
+  ]) {
     test(`${flags.join(" ")} requires an explicit or default account instead of opening an account picker`, async () => {
       const setup = await fixture("vultr", { pick_account: true });
       const result = await setup.run([

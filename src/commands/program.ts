@@ -142,7 +142,7 @@ export async function runCli(
     const flags = flagsFor(command);
     const { account, display_id } = await selectedAccount(
       command,
-      mutation.action !== "instance.create" || (!flags.yes && !flags.dry_run),
+      mutation.action !== "instance.create" || !flags.yes,
     );
     registry.validateAccount(account);
     const definition = registry.get(account.provider_id);
@@ -160,7 +160,6 @@ export async function runCli(
         io.read_text &&
         !flags.json &&
         !flags.yes &&
-        !flags.dry_run &&
         definition.create_guidance
       ) {
         definition.validateCreateDraft?.(create_input);
@@ -195,7 +194,26 @@ export async function runCli(
         .filter(Boolean)
         .join(" "),
     };
+    const review_text =
+      review && create_input
+        ? `${formatCreateReview(display_id, account.provider_id, create_input, review)}\n${preview.notice}`
+        : undefined;
+    const showCreateReview = (dry_run: boolean): void => {
+      if (review_text === undefined) return;
+      const text = dry_run
+        ? `${review_text}\nDry run: no instance will be created.`
+        : review_text;
+      if (io.note) {
+        io.note(
+          text,
+          dry_run ? "Dry-run instance creation" : "Review instance creation",
+        );
+      } else {
+        io.write_err(`${text}\n`);
+      }
+    };
     if (flags.dry_run) {
+      showCreateReview(true);
       print(command, mutation.action, { ...preview, dry_run: true });
       return;
     }
@@ -211,10 +229,8 @@ export async function runCli(
             : "Changes require --yes in noninteractive mode. Use --dry-run to preview.",
         );
       }
-      if (review && create_input) {
-        const text = `${formatCreateReview(display_id, account.provider_id, create_input, review)}\n${preview.notice}`;
-        if (io.note) io.note(text, "Review instance creation");
-        else io.write_err(`${text}\n`);
+      if (review_text !== undefined) {
+        showCreateReview(false);
       } else {
         io.write_err(`${JSON.stringify(preview, null, 2)}\n`);
       }
@@ -248,7 +264,7 @@ export async function runCli(
   };
   const mutationFlags = (command: CliCommand): CliCommand =>
     command
-      .option("--dry-run", "Preview without credentials or provider requests")
+      .option("--dry-run", "Preview without applying changes")
       .option("-y, --yes", "Confirm this change without prompting");
 
   const context: CommandContext = {
