@@ -222,6 +222,7 @@ export class VastProvider implements Provider {
       return [];
     }
     const offers = await this.listOffers({
+      ...(value.id === undefined ? {} : { offer_id: value.id }),
       ...(value.gpu_name === undefined ? {} : { gpu_name: value.gpu_name }),
       ...(value.gpu_count === undefined ? {} : { gpu_count: value.gpu_count }),
       ...(value.disk_gb === undefined ? {} : { disk_gb: value.disk_gb }),

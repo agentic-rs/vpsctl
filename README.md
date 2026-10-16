@@ -123,6 +123,23 @@ Discovery references: [Vultr plan schemas](https://github.com/vultr/govultr/blob
 
 ## Discover and manage instances
 
+Run `instance create` in a terminal to choose an account, machine, and image, then review advertised pricing before the final billable confirmation. The `buy` alias uses the same guided flow.
+
+```sh
+bun run dev instance create
+bun run dev -a vultr instance create
+bun run dev -a runpod instance create --gpu-count 2
+bun run dev -a vast instance create --disk-gb 80
+```
+
+Vultr offers shared CPU, dedicated CPU, and GPU plans with current stock in the selected region, followed by an OS image picker. Bare-metal creation is not supported. RunPod selects Secure Cloud GPU hardware for the requested count, a placement preference, container disk and persistent volume sizes, and a Docker image. Vast.ai searches the current verified, rentable on-demand offers using the requested disk allocation; the default search returns up to 20 offers. Use `spec list offer` for a filtered search, then pass `--offer` to look up and review that exact offer.
+
+Supplied flags are retained. The wizard prompts for missing fields and an instance label, and checks supplied plan/offer IDs against current discovery results. Machine options show hardware and prices; the final review includes the account, machine, image, sizing, supplied settings, advertised cost, and provider billing notes. Missing prices are shown as unavailable. Monthly and hourly costs remain in the units reported by the provider, without estimating monthly GPU charges. RunPod GPU prices exclude storage and other charges; advertised rates are not a price lock and capacity may change before creation.
+
+Guided creation uses read-only catalog requests before confirmation. Cancelling a prompt exits with code 130; declining final confirmation creates nothing. There is one create request after approval, without automatic retries. Prompts and the cost review go to stderr; stdout contains the result.
+
+`--dry-run` stays offline and requires complete flags. `--yes`, `--json`, and noninteractive creation skip the wizard and require all provider-specific fields plus an explicit, environment, or default account selection. JSON creation requires `--yes` to create, or `--dry-run` to preview. SSH keys, tags, hostnames, ports, and other optional settings can still be supplied through the existing flags.
+
 ```sh
 bun run dev spec list region
 bun run dev spec list plan --region nrt
@@ -149,7 +166,7 @@ bun run dev --account work instance edit INSTANCE_ID --plan NEW_PLAN_ID
 bun run dev --account work instance destroy INSTANCE_ID --dry-run
 ```
 
-Every instance mutation supports `--dry-run` and `--yes`. Previews show the account, operation, input, and relevant effects without loading credentials or contacting the provider. They do not validate live capacity or provider-side restrictions. Interactive changes require confirmation; scripts must pass `--yes`. Operations return once the API accepts them; use `instance get` to inspect subsequent progress.
+Every instance mutation supports `--dry-run` and `--yes`. Offline dry-run previews show the account, operation, input, and relevant effects without loading credentials or contacting the provider; they do not validate live capacity. Guided creation instead queries the provider to display available hardware and advertised pricing. Interactive changes require confirmation; scripts must pass `--yes`. Operations return once the API accepts them; use `instance get` to inspect subsequent progress.
 
 Editing sends only supplied fields. Tags replace the complete tag list; `--clear-tags` sends an empty list. Hostname is create-only because changing it can cause a Vultr OS reinstall. Vultr plan changes are subject to upgrade restrictions and can affect billing and availability. Plan region filters show supported locations rather than guaranteed current capacity.
 
@@ -266,6 +283,6 @@ src/
 tests/                   Account, CLI, and adapter tests
 ```
 
-Accounts and commands depend on the provider contract. Adapters can use HTTP, an SDK, or an existing CLI internally. To add a provider, implement `Provider`, supply a `ProviderDefinition` with offline instance-ID and create/edit validation, and register it in `core/registry.ts`. Unsupported operations must return `unsupported_operation`; unavailable metadata and pricing fields are omitted. The current registry is static; external plugin discovery, installation, and versioning remain deferred while these built-in adapters establish the shared contract.
+Accounts and commands depend on the provider contract. Adapters can use HTTP, an SDK, or an existing CLI internally. To add a provider, implement `Provider`, supply a `ProviderDefinition` with offline instance-ID and create/edit validation, and register it in `core/registry.ts`. Guided creation uses optional `create_guidance` metadata and `validateCreateDraft` to validate supplied fields before discovery; full create validation runs after prompting. Unsupported operations must return `unsupported_operation`; unavailable metadata and pricing fields are omitted. The current registry is static; external plugin discovery, installation, and versioning remain deferred while these built-in adapters establish the shared contract.
 
 References: [Bun executables](https://bun.sh/docs/bundler/executables), [Vultr's official API client](https://github.com/vultr/govultr), [Vultr account metadata](https://github.com/vultr/govultr/blob/master/account.go), [Vultr instance behavior](https://docs.vultr.com/reference/terraform/resources/instance), [Vultr stopped-instance billing](https://docs.vultr.com/support/platform/billing/are-stopped-instances-still-billed-on-vultr).

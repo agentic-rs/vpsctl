@@ -133,6 +133,10 @@ export function validateResponse<T>(schema: z.ZodType<T>, input: unknown): T {
   return result.data;
 }
 
+export function validateCreateDraft(input: CreateInstanceInput): void {
+  validateInput(create_schema.partial(), input);
+}
+
 export function createBody(
   input: CreateInstanceInput,
 ): Record<string, unknown> {

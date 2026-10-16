@@ -87,7 +87,9 @@ export function registerInstanceCommands(
     instances
       .command("create")
       .alias("buy")
-      .description("Provision a new billable instance")
+      .description(
+        "Provision an instance; choose hardware interactively or supply flags",
+      )
       .option("--region <id>", "Region; required by Vultr, optional on RunPod")
       .option(
         "--plan <id>",
@@ -180,7 +182,6 @@ export function registerInstanceCommands(
       input,
       notice:
         "Creates a billable instance. Provisioning continues after the request is accepted.",
-      execute: (provider) => provider.createInstance(input),
     });
   });
 

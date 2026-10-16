@@ -10,6 +10,7 @@ import {
   validateCreateInput,
   validateEditInput,
 } from "../src/providers/vast/index.ts";
+import { validateCreateDraft } from "../src/providers/vast/schemas.ts";
 
 const api_key = "synthetic-vast-api-key";
 const create_input: CreateInstanceInput = {
@@ -17,6 +18,53 @@ const create_input: CreateInstanceInput = {
   image_id: "example/workload:latest",
   disk_gb: 20,
 };
+
+describe("Vast.ai create draft validation", () => {
+  test("allows missing required fields but leaves full create validation strict", () => {
+    for (const input of [
+      {},
+      { offer_id: "123" },
+      { image_id: "example/workload:latest", disk_gb: 20 },
+    ]) {
+      expect(() => validateCreateDraft(input)).not.toThrow();
+      expect(() => validateCreateInput(input)).toThrow(
+        expect.objectContaining({ code: "invalid_input" }),
+      );
+    }
+    expect(() => validateCreateDraft(create_input)).not.toThrow();
+  });
+
+  test.each([
+    { offer_id: "../offer" },
+    { offer_id: "0" },
+    { offer_id: "9007199254740992" },
+    { image_id: " image " },
+    { disk_gb: 0 },
+    { label: "line\nbreak" },
+    { unexpected: true },
+  ])("rejects invalid supplied draft fields %j", (input) => {
+    expect(() => validateCreateDraft(input as CreateInstanceInput)).toThrow(
+      expect.objectContaining({ code: "invalid_input" }),
+    );
+  });
+
+  test.each([
+    { region_id: "example-region" },
+    { plan_id: "example-plan" },
+    { hostname: "example-host" },
+    { ssh_key_ids: [] },
+    { tags: [] },
+    { enable_ipv6: false },
+    { enable_ssh: false },
+    { gpu_count: 1 },
+    { volume_gb: 10 },
+    { ports: [] },
+  ])("rejects foreign draft fields %j", (input) => {
+    expect(() => validateCreateDraft(input as CreateInstanceInput)).toThrow(
+      expect.objectContaining({ code: "unsupported_operation" }),
+    );
+  });
+});
 
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
@@ -355,6 +403,35 @@ describe("Vast.ai rental machine discovery", () => {
     });
   });
 
+  test("looks up an explicit rental offer before limiting results", async () => {
+    const { provider, requests } = harness([
+      json({
+        offers: [
+          offer({ id: 122 }),
+          offer({ id: 456, machine_id: 123, dph_total: 0.75 }),
+        ],
+      }),
+    ]);
+    const result = await provider.listMachines({
+      id: "456",
+      disk_gb: 20,
+      limit: 1,
+    });
+    expect(result.map((machine) => machine.id)).toEqual(["456"]);
+    expect(result[0]?.hourly_cost).toBe(0.75);
+    expect(requests).toHaveLength(1);
+    expect(await requests[0]?.json()).toMatchObject({
+      id: { eq: 456 },
+      allocated_storage: 20,
+      disk_space: { gte: 20 },
+      limit: 1,
+      rentable: { eq: true },
+      rented: { eq: false },
+      external: { eq: false },
+      verified: { eq: true },
+    });
+  });
+
   test("keeps zero hourly prices and leaves unknown specifications absent", async () => {
     const { provider } = harness([
       json({
@@ -398,6 +475,10 @@ describe("Vast.ai rental machine discovery", () => {
 
   test.each([
     { type: "unknown" },
+    { id: "" },
+    { id: "../offer" },
+    { id: "0" },
+    { id: "9007199254740992" },
     { type: "bare_metal", gpu_count: 1 },
     { region_id: "" },
     { gpu_count: 1.5 },
@@ -477,7 +558,22 @@ describe("Vast.ai on-demand rental", () => {
     expect(JSON.parse((await requests[0]?.text()) ?? "").limit).toBe(20);
   });
 
+  test("searches a single safe offer ID without using a host or instance ID", async () => {
+    const { provider, requests } = harness([json({ offers: [offer()] })]);
+    await provider.listOffers({ offer_id: "123" });
+    expect(await requests[0]?.json()).toMatchObject({ id: { eq: 123 } });
+  });
+
   test.each([
+    { offer_id: "" },
+    { offer_id: "0" },
+    { offer_id: "-1" },
+    { offer_id: "1.5" },
+    { offer_id: "01" },
+    { offer_id: "1e3" },
+    { offer_id: "9007199254740992" },
+    { offer_id: "../offer" },
+    { offer_id: 123 },
     { limit: 0 },
     { limit: 101 },
     { gpu_count: 1.5 },

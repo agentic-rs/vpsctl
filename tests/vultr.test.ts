@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { AppError } from "../src/core/errors.ts";
-import type { EditInstanceInput, MachineQuery } from "../src/core/provider.ts";
+import type {
+  CreateInstanceInput,
+  EditInstanceInput,
+  MachineQuery,
+} from "../src/core/provider.ts";
 import { VultrProvider } from "../src/providers/vultr/index.ts";
+import {
+  createBody,
+  validateCreateDraft,
+} from "../src/providers/vultr/schemas.ts";
 
 const api_key = "test-api-key-not-for-real-requests";
 
@@ -1119,6 +1127,32 @@ describe("Vultr read cancellation", () => {
 });
 
 describe("Vultr validation and errors", () => {
+  test("validates supplied create fields while allowing required fields to be prompted", () => {
+    for (const input of [{}, { region_id: "nrt" }, { image_id: "1743" }]) {
+      expect(() => validateCreateDraft(input)).not.toThrow();
+      expect(() => createBody(input)).toThrow(
+        expect.objectContaining({ code: "invalid_input" }),
+      );
+    }
+    expect(() => validateCreateDraft(create_input)).not.toThrow();
+  });
+
+  test.each([
+    { region_id: "../region" },
+    { plan_id: "" },
+    { image_id: "0" },
+    { ssh_key_ids: ["../key"] },
+    { tags: [1] },
+    { enable_ipv6: "true" },
+    { offer_id: "123" },
+    { disk_gb: 20 },
+    { unexpected: true },
+  ])("rejects invalid or foreign draft fields %j", (input) => {
+    expect(() => validateCreateDraft(input as CreateInstanceInput)).toThrow(
+      expect.objectContaining({ code: "invalid_input" }),
+    );
+  });
+
   test.each(["", ".", "..", "a/../b", "a/b", "a\\b", "a b", "a\nb", "a%2Fb"])(
     "rejects unsafe instance ID %j before sending a request",
     async (id) => {

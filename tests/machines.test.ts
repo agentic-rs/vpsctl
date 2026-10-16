@@ -55,10 +55,15 @@ describe("machine query validation", () => {
     expect(validateMachineQuery()).toEqual({});
     expect(
       validateMachineQuery({
+        id: " shared-plan ",
         region_id: " example-b ",
         gpu_name: " Example GPU ",
       }),
-    ).toEqual({ region_id: "example-b", gpu_name: "Example GPU" });
+    ).toEqual({
+      id: "shared-plan",
+      region_id: "example-b",
+      gpu_name: "Example GPU",
+    });
     expect(
       validateMachineQuery({ type: "gpu", available_only: false }),
     ).toEqual({
@@ -68,6 +73,9 @@ describe("machine query validation", () => {
   });
 
   test.each([
+    { id: "" },
+    { id: " " },
+    { id: 123 },
     { type: "unknown" },
     { type: "shared-cpu" },
     { region_id: " " },
@@ -114,6 +122,21 @@ describe("machine filtering", () => {
         region_id: "example-b",
       }).map((machine) => machine.id),
     ).toEqual(["metal-plan"]);
+  });
+
+  test("matches an exact machine ID before applying the result limit", () => {
+    expect(
+      filterMachines(machines, { id: "gpu-offer", limit: 1 }).map(
+        (machine) => machine.id,
+      ),
+    ).toEqual(["gpu-offer"]);
+    expect(filterMachines(machines, { id: "gpu", limit: 1 })).toEqual([]);
+    expect(
+      filterMachines(machines, {
+        id: "gpu-offer",
+        type: "shared_cpu",
+      }),
+    ).toEqual([]);
   });
 
   test("available-only excludes unknown as well as sold-out capacity", () => {

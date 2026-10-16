@@ -9,6 +9,7 @@ import {
   validateCreateInput,
   validateEditInput,
 } from "../src/providers/runpod/index.ts";
+import { validateCreateDraft } from "../src/providers/runpod/schemas.ts";
 
 const api_key = "synthetic-runpod-api-key";
 const create_input: CreateInstanceInput = {
@@ -17,6 +18,51 @@ const create_input: CreateInstanceInput = {
   label: "example-pod",
   disk_gb: 40,
 };
+
+describe("RunPod create draft validation", () => {
+  test("allows missing required fields but leaves full create validation strict", () => {
+    for (const input of [
+      {},
+      { plan_id: "NVIDIA Example GPU" },
+      { image_id: "example/workload:latest", disk_gb: 40 },
+    ]) {
+      expect(() => validateCreateDraft(input)).not.toThrow();
+      expect(() => validateCreateInput(input)).toThrow(
+        expect.objectContaining({ code: "invalid_input" }),
+      );
+    }
+    expect(() => validateCreateDraft(create_input)).not.toThrow();
+  });
+
+  test.each([
+    { plan_id: "" },
+    { image_id: "image with spaces" },
+    { region_id: "../region" },
+    { label: " " },
+    { disk_gb: 0 },
+    { gpu_count: 1.5 },
+    { volume_gb: 9 },
+    { ports: ["22/udp"] },
+    { enable_ssh: "true" },
+  ])("rejects invalid supplied draft fields %j", (input) => {
+    expect(() => validateCreateDraft(input as CreateInstanceInput)).toThrow(
+      expect.objectContaining({ code: "invalid_input" }),
+    );
+  });
+
+  test.each([
+    { hostname: "example-host" },
+    { ssh_key_ids: [] },
+    { tags: [] },
+    { enable_ipv6: false },
+    { offer_id: "123" },
+    { unexpected: true },
+  ])("rejects foreign draft fields %j", (input) => {
+    expect(() => validateCreateDraft(input as CreateInstanceInput)).toThrow(
+      expect.objectContaining({ code: "unsupported_operation" }),
+    );
+  });
+});
 
 function pod(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {

@@ -20,13 +20,19 @@ export interface PromptProgress {
   fail(message: string): void;
 }
 
+export interface TextPromptOptions {
+  initial_value?: string;
+  allow_empty?: boolean;
+  validate?(value: string): string | undefined;
+}
+
 export interface CliIO {
   write_out(text: string): void;
   write_err(text: string): void;
   readonly output_columns?: number | undefined;
   is_interactive: boolean;
   confirm(message: string): Promise<boolean>;
-  read_text?(message: string): Promise<string>;
+  read_text?(message: string, options?: TextPromptOptions): Promise<string>;
   read_secret?(message: string): Promise<string>;
   read_stdin?(): Promise<string>;
   select?(message: string, options: PromptOption[]): Promise<string>;
@@ -52,7 +58,6 @@ export interface CommonOptions {
 
 interface MutationOperation {
   notice: string;
-  execute(provider: Provider): Promise<unknown>;
 }
 
 export type Mutation = MutationOperation &
@@ -62,11 +67,17 @@ export type Mutation = MutationOperation &
         input: CreateInstanceInput;
         instance_id?: never;
       }
-    | { action: "instance.edit"; input: EditInstanceInput; instance_id: string }
+    | {
+        action: "instance.edit";
+        input: EditInstanceInput;
+        instance_id: string;
+        execute(provider: Provider): Promise<unknown>;
+      }
     | {
         action: `instance.${Exclude<InstanceAction, "create" | "edit">}`;
         input?: never;
         instance_id: string;
+        execute(provider: Provider): Promise<unknown>;
       }
   );
 

@@ -125,6 +125,7 @@ export interface ProviderInfo {
 }
 
 export interface OfferQuery {
+  offer_id?: string;
   gpu_name?: string;
   gpu_count?: number;
   disk_gb?: number;
@@ -148,6 +149,7 @@ export interface Offer {
 export type MachineType = "shared_cpu" | "dedicated_cpu" | "bare_metal" | "gpu";
 
 export interface MachineQuery {
+  id?: string;
   type?: MachineType;
   region_id?: string;
   gpu_name?: string;
@@ -208,8 +210,21 @@ export interface Provider {
 export interface ProviderDefinition {
   info: ProviderInfo;
   credential_fields: readonly string[];
+  create_guidance?: CreateGuidance;
   validateInstanceId?(id: string): void;
   validateCreateInput?(input: CreateInstanceInput): void;
+  validateCreateDraft?(input: CreateInstanceInput): void;
   validateEditInput?(input: EditInstanceInput): void;
   create(credentials: Readonly<Record<string, string>>): Provider;
+}
+
+export interface CreateGuidance {
+  machine_types: readonly MachineType[];
+  machine_source: "plan" | "offer";
+  region: "required" | "optional" | "none";
+  image: "catalog" | "docker";
+  gpu_count?: boolean;
+  disk_gb?: boolean;
+  volume_gb?: boolean;
+  cost_notice: string;
 }

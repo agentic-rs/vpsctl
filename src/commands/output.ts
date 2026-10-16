@@ -35,7 +35,7 @@ const column_priorities: Readonly<Record<string, number>> = {
   is_default: 6,
 };
 
-function formatMoney(amount: number, currency?: string): string {
+export function formatMoney(amount: number, currency?: string): string {
   const code = currency?.trim().toUpperCase();
   if (code === "USD") return `$ ${amount}`;
   if (code === "CNY") return `¥ ${amount}`;
@@ -59,6 +59,10 @@ function displayCell(row: Row, key: string): string {
 function display(value: unknown): string {
   const text =
     typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+  return sanitizeTerminalText(text);
+}
+
+export function sanitizeTerminalText(text: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: Strip terminal control characters from provider-supplied labels.
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 }

@@ -38,6 +38,7 @@ const create_schema = z
 const edit_schema = z.object({ label }).strict();
 const query_schema = z
   .object({
+    offer_id: identifier_schema.optional(),
     gpu_name: text
       .min(1)
       .max(200)
@@ -150,7 +151,7 @@ function rejectUnsupported(input: object, fields: readonly string[]): void {
   }
 }
 
-export function validateCreateInput(input: CreateInstanceInput): void {
+function validateCreateOptions(input: CreateInstanceInput): void {
   if (!input || typeof input !== "object") {
     throw new AppError("invalid_input", "Invalid Vast.ai create input.");
   }
@@ -171,11 +172,20 @@ export function validateCreateInput(input: CreateInstanceInput): void {
       "Vast.ai creation uses the SSH launch mode.",
     );
   }
+}
+
+export function validateCreateInput(input: CreateInstanceInput): void {
+  validateCreateOptions(input);
   validateInput(
     create_schema,
     input,
     "Vast.ai creation requires a positive decimal --offer ID, a Docker --image, and a positive --disk-gb size. Optional fields are --label and --ssh.",
   );
+}
+
+export function validateCreateDraft(input: CreateInstanceInput): void {
+  validateCreateOptions(input);
+  validateInput(create_schema.partial(), input);
 }
 
 export function createBody(
@@ -228,6 +238,9 @@ export function offerBody(query: OfferQuery = {}): Record<string, unknown> {
     external: { eq: false },
     order: [["dph_total", "asc"]],
     limit: value.limit ?? 20,
+    ...(value.offer_id === undefined
+      ? {}
+      : { id: { eq: Number(value.offer_id) } }),
     ...(value.gpu_name === undefined
       ? {}
       : { gpu_name: { eq: value.gpu_name } }),

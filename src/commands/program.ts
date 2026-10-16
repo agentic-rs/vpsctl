@@ -7,7 +7,11 @@ import {
   resolveAccount,
 } from "../core/accounts.ts";
 import { AppError } from "../core/errors.ts";
-import type { InstanceAction, Provider } from "../core/provider.ts";
+import type {
+  CreateInstanceInput,
+  InstanceAction,
+  Provider,
+} from "../core/provider.ts";
 import { ProviderRegistry } from "../core/registry.ts";
 import { registerAuthCommands } from "./auth.ts";
 import { CliCommand } from "./command.ts";
@@ -17,6 +21,11 @@ import type {
   CommonOptions,
   Mutation,
 } from "./context.ts";
+import {
+  type CreateReview,
+  formatCreateReview,
+  prepareCreate,
+} from "./create.ts";
 import { registerCredentialCommands } from "./credential.ts";
 import { nonblank } from "./input.ts";
 import { registerInstanceCommands } from "./instances.ts";
@@ -57,12 +66,14 @@ export async function runCli(
   };
   const selectedAccount = async (
     command: CliCommand,
+    allow_prompt = true,
   ): Promise<{ account: Account; display_id: string }> => {
     const config = await storeFor(command).read();
     const flags = flagsFor(command);
     let account_id =
       flags.account ?? env.VPSCTL_ACCOUNT ?? config.default_account_id;
     if (
+      allow_prompt &&
       account_id === undefined &&
       io.is_interactive &&
       !flags.json &&
@@ -128,15 +139,42 @@ export async function runCli(
     command: CliCommand,
     mutation: Mutation,
   ): Promise<void> => {
-    const { account, display_id } = await selectedAccount(command);
     const flags = flagsFor(command);
+    const { account, display_id } = await selectedAccount(
+      command,
+      mutation.action !== "instance.create" || (!flags.yes && !flags.dry_run),
+    );
     registry.validateAccount(account);
     const definition = registry.get(account.provider_id);
+    let create_input: CreateInstanceInput | undefined;
+    let review: CreateReview | undefined;
+    let prepared_provider: Provider | undefined;
     if (mutation.instance_id !== undefined) {
       definition.validateInstanceId?.(mutation.instance_id);
     }
     if (mutation.action === "instance.create") {
-      definition.validateCreateInput?.(mutation.input);
+      create_input = mutation.input;
+      if (
+        io.is_interactive &&
+        io.select &&
+        io.read_text &&
+        !flags.json &&
+        !flags.yes &&
+        !flags.dry_run &&
+        definition.create_guidance
+      ) {
+        definition.validateCreateDraft?.(create_input);
+        prepared_provider = registry.connect(account, env);
+        const prepared = await prepareCreate(
+          create_input,
+          definition.create_guidance,
+          io,
+          prepared_provider,
+        );
+        create_input = prepared.input;
+        review = prepared.review;
+      }
+      definition.validateCreateInput?.(create_input);
     } else if (mutation.action === "instance.edit") {
       definition.validateEditInput?.(mutation.input);
     }
@@ -145,7 +183,9 @@ export async function runCli(
       provider_id: account.provider_id,
       action: mutation.action,
       ...(mutation.instance_id ? { instance_id: mutation.instance_id } : {}),
-      ...(mutation.input ? { input: mutation.input } : {}),
+      ...((create_input ?? mutation.input)
+        ? { input: create_input ?? mutation.input }
+        : {}),
       notice: [
         mutation.notice,
         definition.info.operation_notes?.[
@@ -160,14 +200,29 @@ export async function runCli(
       return;
     }
     if (!flags.yes) {
-      if (!io.is_interactive) {
+      if (
+        !io.is_interactive ||
+        (flags.json && mutation.action === "instance.create")
+      ) {
         throw new AppError(
           "invalid_input",
-          "Changes require --yes in noninteractive mode. Use --dry-run to preview.",
+          flags.json && mutation.action === "instance.create"
+            ? "JSON creation requires --yes. Use --dry-run to preview."
+            : "Changes require --yes in noninteractive mode. Use --dry-run to preview.",
         );
       }
-      io.write_err(`${JSON.stringify(preview, null, 2)}\n`);
-      if (!(await io.confirm("Apply this change?"))) {
+      if (review && create_input) {
+        const text = `${formatCreateReview(display_id, account.provider_id, create_input, review)}\n${preview.notice}`;
+        if (io.note) io.note(text, "Review instance creation");
+        else io.write_err(`${text}\n`);
+      } else {
+        io.write_err(`${JSON.stringify(preview, null, 2)}\n`);
+      }
+      if (
+        !(await io.confirm(
+          review ? "Create this billable instance?" : "Apply this change?",
+        ))
+      ) {
         print(
           command,
           mutation.action,
@@ -178,7 +233,11 @@ export async function runCli(
         return;
       }
     }
-    const data = await mutation.execute(registry.connect(account, env));
+    const provider = prepared_provider ?? registry.connect(account, env);
+    const data =
+      mutation.action === "instance.create"
+        ? await provider.createInstance(create_input ?? mutation.input)
+        : await mutation.execute(provider);
     print(
       command,
       mutation.action,

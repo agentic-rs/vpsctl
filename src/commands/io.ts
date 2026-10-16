@@ -32,13 +32,19 @@ export const default_io: CliIO = {
     return process.stdout.isTTY ? process.stdout.columns : undefined;
   },
   is_interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
-  async read_text(message) {
+  async read_text(message, options = {}) {
     return promptValue(
       await text({
         ...prompt_io,
         message,
-        validate: (value) =>
-          value?.trim() ? undefined : "A value is required.",
+        ...(options.initial_value === undefined
+          ? {}
+          : { initialValue: options.initial_value }),
+        validate: (value) => {
+          if (!options.allow_empty && !value?.trim())
+            return "A value is required.";
+          return options.validate?.(value ?? "");
+        },
       }),
     );
   },

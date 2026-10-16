@@ -4,20 +4,27 @@ import {
   validateCreateInput as validateRunpodCreate,
   validateEditInput as validateRunpodEdit,
 } from "../providers/runpod/index.ts";
-import { parseIdentifier as parseRunpodId } from "../providers/runpod/schemas.ts";
+import {
+  parseIdentifier as parseRunpodId,
+  validateCreateDraft as validateRunpodDraft,
+} from "../providers/runpod/schemas.ts";
 import {
   VastProvider,
   validateCreateInput as validateVastCreate,
   validateEditInput as validateVastEdit,
   vast_info,
 } from "../providers/vast/index.ts";
-import { instancePath as vastInstancePath } from "../providers/vast/schemas.ts";
+import {
+  validateCreateDraft as validateVastDraft,
+  instancePath as vastInstancePath,
+} from "../providers/vast/schemas.ts";
 import { VultrProvider, vultr_info } from "../providers/vultr/index.ts";
 import {
   createBody,
   editBody,
   identifier_schema,
   validateInput,
+  validateCreateDraft as validateVultrDraft,
 } from "../providers/vultr/schemas.ts";
 import type { Account } from "./accounts.ts";
 import { resolveCredentialReferences, resolveCredentials } from "./accounts.ts";
@@ -27,6 +34,15 @@ import type { Provider, ProviderDefinition } from "./provider.ts";
 const vultr_definition: ProviderDefinition = {
   info: vultr_info,
   credential_fields: ["api_key"],
+  create_guidance: {
+    machine_types: ["shared_cpu", "dedicated_cpu", "gpu"],
+    machine_source: "plan",
+    region: "required",
+    image: "catalog",
+    cost_notice:
+      "Advertised base compute rate; excludes add-ons, usage, OS licensing, and other charges. Stock and pricing can change before creation.",
+  },
+  validateCreateDraft: validateVultrDraft,
   validateInstanceId(id) {
     validateInput(identifier_schema, id);
   },
@@ -51,6 +67,18 @@ const vultr_definition: ProviderDefinition = {
 const runpod_definition: ProviderDefinition = {
   info: runpod_info,
   credential_fields: ["api_key"],
+  create_guidance: {
+    machine_types: ["gpu"],
+    machine_source: "plan",
+    region: "optional",
+    image: "docker",
+    gpu_count: true,
+    disk_gb: true,
+    volume_gb: true,
+    cost_notice:
+      "Advertised GPU compute rate for the selected GPU count; storage and other charges are extra. Region is a placement preference and capacity can change.",
+  },
+  validateCreateDraft: validateRunpodDraft,
   validateInstanceId(id) {
     parseRunpodId(id);
   },
@@ -71,6 +99,16 @@ const runpod_definition: ProviderDefinition = {
 const vast_definition: ProviderDefinition = {
   info: vast_info,
   credential_fields: ["api_key"],
+  create_guidance: {
+    machine_types: ["gpu"],
+    machine_source: "offer",
+    region: "none",
+    image: "docker",
+    disk_gb: true,
+    cost_notice:
+      "Advertised offer estimate for the requested disk allocation; bandwidth and other charges may apply. Offer availability and price can change before rental.",
+  },
+  validateCreateDraft: validateVastDraft,
   validateInstanceId(id) {
     vastInstancePath(id);
   },

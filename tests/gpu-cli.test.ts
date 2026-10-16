@@ -555,7 +555,7 @@ describe("GPU provider CLI requests", () => {
     ]);
   });
 
-  test("routes confirmed RunPod creates through the adapter with a single mutation request", async () => {
+  test("routes scripted RunPod creates through the adapter with a single mutation request", async () => {
     const { run, requests, connections } = await fixture({
       runpod: [Response.json({ id: "pod-1" }, { status: 201 })],
     });
@@ -575,12 +575,13 @@ describe("GPU provider CLI requests", () => {
         "--port",
         "8888/http",
         "--ssh",
+        "--yes",
       ],
       { is_interactive: true, confirmation: true },
     );
     expect(result.exit_code).toBe(0);
-    expect(result.confirmations).toEqual(["Apply this change?"]);
-    expect(result.stderr).toContain("Container disk is temporary");
+    expect(result.confirmations).toEqual([]);
+    expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual({
       account_id: "runpod",
       provider_id: "runpod",
@@ -652,15 +653,16 @@ describe("GPU provider CLI requests", () => {
     expect(result.stdout).not.toContain(api_key);
   });
 
-  test("a declined GPU mutation does not resolve credentials or make requests", async () => {
+  test("JSON creation requires --yes before credentials or requests", async () => {
     const { run, requests, connections } = await fixture();
     const result = await run(
       ["--account", "runpod", "instance", "create", ...runpod_create],
       { env: {}, is_interactive: true, confirmation: false },
     );
-    expect(result.exit_code).toBe(0);
-    expect(JSON.parse(result.stdout).data).toEqual({ status: "cancelled" });
-    expect(result.confirmations).toHaveLength(1);
+    expect(result.exit_code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr).error.message).toContain("--yes");
+    expect(result.confirmations).toEqual([]);
     expect(connections).toEqual([]);
     expect(requests).toEqual([]);
   });

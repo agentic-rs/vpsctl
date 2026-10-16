@@ -85,6 +85,11 @@ export function validateCreateInput(input: CreateInstanceInput): void {
   parseInput(create_schema, input);
 }
 
+export function validateCreateDraft(input: CreateInstanceInput): void {
+  rejectUnsupported(input, create_fields);
+  parseInput(create_schema.partial(), input);
+}
+
 export function validateEditInput(input: EditInstanceInput): void {
   rejectUnsupported(input, edit_fields);
   parseInput(edit_schema, input);

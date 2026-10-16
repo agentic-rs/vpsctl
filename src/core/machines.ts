@@ -4,6 +4,7 @@ import type { MachineOffer, MachineQuery } from "./provider.ts";
 
 const machine_query_schema = z
   .object({
+    id: z.string().trim().min(1).optional(),
     type: z
       .enum(["shared_cpu", "dedicated_cpu", "bare_metal", "gpu"])
       .optional(),
@@ -42,6 +43,7 @@ export function filterMachines(
   query: MachineQuery,
 ): MachineOffer[] {
   const filtered = machines.filter((machine) => {
+    if (query.id !== undefined && machine.id !== query.id) return false;
     if (query.type !== undefined && machine.type !== query.type) return false;
     if (
       query.region_id !== undefined &&
