@@ -145,6 +145,42 @@ export interface Offer {
   reliability?: number;
 }
 
+export type MachineType = "shared_cpu" | "dedicated_cpu" | "bare_metal" | "gpu";
+
+export interface MachineQuery {
+  type?: MachineType;
+  region_id?: string;
+  gpu_name?: string;
+  gpu_count?: number;
+  disk_gb?: number;
+  limit?: number;
+  available_only?: boolean;
+}
+
+export interface MachineOffer {
+  provider_id: string;
+  id: string;
+  name?: string;
+  type: MachineType;
+  source: "plan" | "offer";
+  availability: "available" | "unavailable" | "unknown";
+  region_ids: string[];
+  vcpu_count?: number;
+  cpu_count?: number;
+  cpu_threads?: number;
+  cpu_model?: string;
+  memory_mb?: number;
+  disk_gb?: number;
+  disk_count?: number;
+  disk_size_gb?: number;
+  gpu_name?: string;
+  gpu_count?: number;
+  gpu_memory_gb?: number;
+  monthly_cost?: number;
+  hourly_cost?: number;
+  currency: string;
+}
+
 export interface Provider {
   readonly info: ProviderInfo;
   getAccountMetadata?(
@@ -164,6 +200,7 @@ export interface Provider {
   listRegions(): Promise<Region[]>;
   listPlans(region_id?: string): Promise<Plan[]>;
   listOffers?(query?: OfferQuery): Promise<Offer[]>;
+  listMachines?(query?: MachineQuery): Promise<MachineOffer[]>;
   listImages(): Promise<Image[]>;
   listSshKeys(): Promise<SshKey[]>;
 }

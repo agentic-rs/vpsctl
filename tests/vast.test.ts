@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type {
   CreateInstanceInput,
   EditInstanceInput,
+  MachineQuery,
   OfferQuery,
 } from "../src/core/provider.ts";
 import {
@@ -279,6 +280,137 @@ describe("Vast.ai inventory", () => {
     await expect(provider.getInstance("456")).rejects.toMatchObject({
       code: "not_found",
     });
+  });
+});
+
+describe("Vast.ai rental machine discovery", () => {
+  test("returns available GPU offers with reported capacity and prices", async () => {
+    const { provider, requests } = harness([
+      json({
+        offers: [
+          offer({
+            machine_id: 789,
+            hostname: "private-hostname",
+            public_ipaddr: "192.0.2.10",
+          }),
+        ],
+      }),
+    ]);
+    expect(
+      await provider.listMachines({ type: "gpu", available_only: true }),
+    ).toEqual([
+      {
+        provider_id: "vast",
+        id: "123",
+        type: "gpu",
+        source: "offer",
+        availability: "available",
+        region_ids: [],
+        gpu_name: "Example GPU",
+        gpu_count: 2,
+        hourly_cost: 0.25,
+        currency: "USD",
+        vcpu_count: 8.5,
+        memory_mb: 32000,
+        disk_gb: 100,
+        gpu_memory_gb: 24,
+      },
+    ]);
+    expect(provider.info.capabilities).toContain("machines");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe("https://cloud.vast.ai/api/v0/bundles/");
+    expect(requests[0]?.method).toBe("POST");
+    expect(await requests[0]?.json()).toMatchObject({
+      type: "ondemand",
+      rentable: { eq: true },
+      rented: { eq: false },
+      verified: { eq: true },
+      limit: 20,
+    });
+  });
+
+  test("forwards marketplace filters and filters mismatching returned offers", async () => {
+    const { provider, requests } = harness([
+      json({
+        offers: [
+          offer({ id: 122, gpu_name: "Other GPU" }),
+          offer(),
+          offer({ id: 124 }),
+        ],
+      }),
+    ]);
+    const result = await provider.listMachines({
+      gpu_name: "Example GPU",
+      gpu_count: 2,
+      disk_gb: 80,
+      limit: 1,
+    });
+    expect(result.map((machine) => machine.id)).toEqual(["123"]);
+    expect(await requests[0]?.json()).toMatchObject({
+      gpu_name: { eq: "Example GPU" },
+      num_gpus: { eq: 2 },
+      allocated_storage: 80,
+      disk_space: { gte: 80 },
+      limit: 1,
+    });
+  });
+
+  test("keeps zero hourly prices and leaves unknown specifications absent", async () => {
+    const { provider } = harness([
+      json({
+        offers: [
+          { id: 123, gpu_name: "Example GPU", num_gpus: 1, dph_total: 0 },
+        ],
+      }),
+    ]);
+    expect(await provider.listMachines()).toEqual([
+      {
+        provider_id: "vast",
+        id: "123",
+        type: "gpu",
+        source: "offer",
+        availability: "available",
+        region_ids: [],
+        gpu_name: "Example GPU",
+        gpu_count: 1,
+        hourly_cost: 0,
+        currency: "USD",
+      },
+    ]);
+  });
+
+  test.each(["shared_cpu", "dedicated_cpu", "bare_metal"] as const)(
+    "does not infer %s resources from GPU host specifications",
+    async (type) => {
+      const { provider, requests } = harness([]);
+      expect(await provider.listMachines({ type })).toEqual([]);
+      expect(requests).toHaveLength(0);
+    },
+  );
+
+  test("does not treat arbitrary provider regions as Vast locations", async () => {
+    const { provider, requests } = harness([]);
+    expect(
+      await provider.listMachines({ region_id: "example-region" }),
+    ).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  test.each([
+    { type: "unknown" },
+    { type: "bare_metal", gpu_count: 1 },
+    { region_id: "" },
+    { gpu_count: 1.5 },
+    { disk_gb: -1 },
+    { limit: 101 },
+    { available_only: "yes" },
+    { unexpected: true },
+  ])("rejects invalid machine filters before HTTP (%j)", async (query) => {
+    const { provider, requests } = harness([]);
+    await expect(
+      provider.listMachines(query as MachineQuery),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(requests).toHaveLength(0);
   });
 });
 

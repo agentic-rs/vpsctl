@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AppError } from "../../core/errors.ts";
+import { filterMachines, validateMachineQuery } from "../../core/machines.ts";
 import type {
   AccountMetadata,
   CreateInstanceInput,
@@ -7,6 +8,8 @@ import type {
   Image,
   Instance,
   InstanceMutationResult,
+  MachineOffer,
+  MachineQuery,
   Offer,
   OfferQuery,
   Plan,
@@ -50,6 +53,7 @@ export const vast_info: ProviderInfo = {
     "stop",
     "reboot",
     "offers",
+    "machines",
     "account_metadata",
   ],
   operation_notes: {
@@ -205,6 +209,49 @@ export class VastProvider implements Provider {
       response,
     );
     return value.offers.map(normalizeOffer);
+  }
+
+  async listMachines(query?: MachineQuery): Promise<MachineOffer[]> {
+    const value = validateMachineQuery(query);
+    // Vast offers GPU containers without a fixed region catalog. A container's
+    // host CPU does not establish that the offer is a CPU VM or bare metal.
+    if (
+      (value.type !== undefined && value.type !== "gpu") ||
+      value.region_id !== undefined
+    ) {
+      return [];
+    }
+    const offers = await this.listOffers({
+      ...(value.gpu_name === undefined ? {} : { gpu_name: value.gpu_name }),
+      ...(value.gpu_count === undefined ? {} : { gpu_count: value.gpu_count }),
+      ...(value.disk_gb === undefined ? {} : { disk_gb: value.disk_gb }),
+      ...(value.limit === undefined ? {} : { limit: value.limit }),
+    });
+    const machines = offers.map(
+      (offer): MachineOffer => ({
+        provider_id: "vast",
+        id: offer.id,
+        type: "gpu",
+        source: "offer",
+        availability: "available",
+        region_ids: [],
+        gpu_name: offer.gpu_name,
+        gpu_count: offer.gpu_count,
+        hourly_cost: offer.hourly_cost,
+        currency: offer.currency,
+        ...(offer.vcpu_count === undefined
+          ? {}
+          : { vcpu_count: offer.vcpu_count }),
+        ...(offer.memory_mb === undefined
+          ? {}
+          : { memory_mb: offer.memory_mb }),
+        ...(offer.disk_gb === undefined ? {} : { disk_gb: offer.disk_gb }),
+        ...(offer.gpu_memory_gb === undefined
+          ? {}
+          : { gpu_memory_gb: offer.gpu_memory_gb }),
+      }),
+    );
+    return filterMachines(machines, value);
   }
 
   async listRegions(): Promise<Region[]> {

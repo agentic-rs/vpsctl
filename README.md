@@ -36,7 +36,7 @@ Commands follow `<scope> <verb> [resource]`. Run a scope without a verb, such as
 | `auth` | `login`, `add`, `list`, `get`, `use`, `remove` |
 | `provider` | `list` |
 | `instance` | `list`, `get`, `create` (`buy`), `edit`, `start`, `stop`, `reboot`, `destroy` |
-| `spec` | `list region`, `list plan`, `list image`, `list offer` |
+| `spec` | `list machine`, `list region`, `list plan`, `list image`, `list offer` |
 | `credential` | `list ssh-key` |
 
 Provider specifications are read-only remote resources. SSH keys belong to the `credential` scope. `credential list ssh-key` lists keys already registered with the selected provider.
@@ -68,6 +68,44 @@ RunPod and Vast.ai expose their account email and credit balance. RunPod also re
 `instance list --all` and `auth get --all` work across providers and retain successful results if another account fails. Inventory exposes only normalized fields, excluding environment variables, passwords, private keys, and other raw provider response data.
 
 Instance listings show prices with their currency in each cost cell: `$ 6` for USD, `¥ 6` for CNY, and `6 EUR` for other currency codes. Human-readable tables have no separate currency column. JSON retains numeric `monthly_cost`/`hourly_cost` values and the `currency` field. Vultr listings request the plan catalog once and match each instance to its current advertised monthly plan rate in USD; this is a base rate, excluding add-ons, usage charges, credits, and account-specific discounts. If pricing is unavailable or a plan is no longer listed, inventory still succeeds and the price is omitted. Authentication does not request plan pricing. Hourly GPU prices remain hourly; the CLI does not estimate monthly prices from them.
+
+## Discover machines to rent
+
+```sh
+# Query the selected account, or compare all configured accounts.
+bun run dev spec list machine
+bun run dev spec list machine --all
+bun run dev --json spec list machine --all --type gpu --limit 10
+
+# Categories: shared-cpu, dedicated-cpu, bare-metal, gpu.
+bun run dev spec list machine --type shared-cpu
+bun run dev spec list machine --type dedicated-cpu
+bun run dev spec list machine --type bare-metal
+
+# Vultr requires a region for a live stock check.
+bun run dev spec list machine --region REGION_ID --available
+
+# GPU filters use exact model names and a requested GPU count.
+bun run dev spec list machine --type gpu --gpu 'Example GPU' --gpu-count 2
+```
+
+`spec list machine` discovers rental plans and offers; `instance list` lists resources already owned. Machine results include `type`, `source` (`plan` or `offer`), `availability` (`available`, `unavailable`, or `unknown`), hardware details when reported, regions, and advertised prices. JSON categories use `shared_cpu`, `dedicated_cpu`, `bare_metal`, and `gpu`. Dedicated CPU means a virtual machine with dedicated CPU resources; bare metal is a separate physical-server product.
+
+Vultr categories follow the explicit API plan type; unrecognized types are omitted until their classification is established.
+
+| Provider | Categories exposed | Availability |
+| --- | --- | --- |
+| Vultr | Shared CPU, dedicated CPU, bare metal, GPU | Catalog stock is unknown without `--region`; regional discovery checks current stock and includes supported but sold-out plans. |
+| RunPod | Secure Cloud GPU Pods | Provider-reported stock for the requested GPU count, globally or in `--region`. CPU tenancy is not identified by the catalog, so CPU plans are omitted. |
+| Vast.ai | Verified, rentable, unrented on-demand GPU offers | Offers matching the live search are marked available. No fixed region catalog; a `--region` filter returns no matches. |
+
+`--available` excludes both unavailable and unknown capacity; Vultr requires `--region` with this flag. Region IDs belong to each provider, so a region filter across `--all` only matches providers that recognize that ID. Unsupported categories return no matches. `--all` retains successful account results when another fails and returns exit code 1; its JSON data contains account records with `machines` or `error`. Selected-account JSON data is the machine array, with action `spec.list.machine` in both modes.
+
+`--disk-gb` filters reported disk capacity; Vast.ai also uses it as the requested allocation when pricing an offer. Results with unknown disk capacity are excluded when this filter is set, including RunPod GPU plans whose disk is configured during creation. Bare-metal disk configurations retain `disk_size_gb` and `disk_count`; `disk_gb` is omitted when usable total capacity cannot be established. GPU model and count filters require GPU results; unreported specifications are never inferred. Vultr GPU plans omit GPU count because the catalog does not report it. `--limit` caps results per account (1–100); catalogs are otherwise untruncated, while Vast.ai defaults to 20 offers.
+
+Stock can change before creation. Plan IDs and offer IDs are rental specifications, not instance IDs. Monthly prices are reported only when the provider supplies them; RunPod shows the total hourly GPU price for the requested count, excluding storage and other charges. Discovery does not add bare-metal or CPU Pod provisioning to `instance create`.
+
+Discovery references: [Vultr plan schemas](https://github.com/vultr/govultr/blob/master/plan.go), [Vultr regional availability](https://github.com/vultr/govultr/blob/master/region.go), [RunPod GPU catalog](https://docs.runpod.io/api-reference-v2/catalog/list-gpu-types), [RunPod CPU catalog](https://docs.runpod.io/api-reference-v2/catalog/list-cpu-types), [Vast.ai offer search](https://docs.vast.ai/api-reference/search/search-offers).
 
 ## Discover and manage instances
 
@@ -103,7 +141,7 @@ Editing sends only supplied fields. Tags replace the complete tag list; `--clear
 
 Stopping a Vultr instance continues billing. Starting an already running instance may restart it. Destroy permanently deletes the instance and its local data and releases its IP address. Requests are never retried automatically; after a timeout or ambiguous mutation failure, verify the account's inventory before trying again.
 
-This version provisions Vultr OS images through the instances API. Bare Metal, Kubernetes, snapshots, rebuilds, marketplace applications, attached storage, and billing management are outside the initial scope. Instance deletion does not manage separately provisioned resources.
+This version provisions Vultr OS images through the instances API. Bare-metal provisioning, Kubernetes, snapshots, rebuilds, marketplace applications, attached storage, and billing management are outside the initial scope. Instance deletion does not manage separately provisioned resources.
 
 ## GPU providers
 
@@ -205,6 +243,7 @@ src/
   commands/              Auth, provider, instance, spec, and credential commands; terminal IO
   core/accounts.ts       Account persistence and credential resolution
   core/provider.ts       Provider contract and normalized records
+  core/machines.ts       Shared rental discovery filters and validation
   core/registry.ts       Built-in adapter registration and credential routing
   providers/http.ts      Shared bearer HTTP transport for GPU providers
   providers/vultr/       Vultr API transport, validation, and mapping

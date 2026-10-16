@@ -1,4 +1,5 @@
 import { AppError } from "../../core/errors.ts";
+import { filterMachines, validateMachineQuery } from "../../core/machines.ts";
 import type {
   AccountMetadata,
   CreateInstanceInput,
@@ -6,6 +7,8 @@ import type {
   Image,
   Instance,
   InstanceMutationResult,
+  MachineOffer,
+  MachineQuery,
   Plan,
   Provider,
   ProviderInfo,
@@ -20,7 +23,9 @@ import {
   createBody,
   editBody,
   graphql_errors_schema,
+  machines_schema,
   normalizeInstance,
+  normalizeMachine,
   parseIdentifier,
   plans_schema,
   pod_schema,
@@ -45,6 +50,7 @@ export const runpod_info: ProviderInfo = {
     "reboot",
     "regions",
     "plans",
+    "machines",
     "account_metadata",
   ],
   operation_notes: {
@@ -245,6 +251,23 @@ export class RunpodProvider implements Provider {
     return region_id === undefined
       ? plans
       : plans.filter((plan) => plan.region_ids.includes(region_id));
+  }
+
+  async listMachines(query?: MachineQuery): Promise<MachineOffer[]> {
+    const filters = validateMachineQuery(query);
+    if (filters.type !== undefined && filters.type !== "gpu") return [];
+    const gpu_count = filters.gpu_count ?? 1;
+    const parameters = new URLSearchParams({
+      include: "AVAILABILITY",
+      product: "POD",
+      cloud: "SECURE",
+      count: String(gpu_count),
+    });
+    const response = await this.#http.request(`/catalog/gpus?${parameters}`);
+    const machines = validateResponse(machines_schema, response)
+      .gpus.filter((gpu) => gpu.secure)
+      .map((gpu) => normalizeMachine(gpu, gpu_count, filters.region_id));
+    return filterMachines(machines, filters);
   }
 
   async listImages(): Promise<Image[]> {

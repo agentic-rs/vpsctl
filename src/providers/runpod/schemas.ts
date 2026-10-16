@@ -6,6 +6,7 @@ import type {
   EditInstanceInput,
   Instance,
   InstanceStatus,
+  MachineOffer,
 } from "../../core/provider.ts";
 
 const text_schema = z
@@ -207,25 +208,84 @@ export const regions_schema = z.object({
   dataCenters: z.array(z.object({ id: z.string().min(1), name: z.string() })),
 });
 
-export const plans_schema = z.object({
-  gpus: z.array(
-    z.object({
-      id: z.string().min(1),
-      name: z.string(),
-      memory: z.number().nonnegative(),
-      secure: z.boolean(),
-      price: z.object({ secure: z.number().nonnegative() }),
-      dataCenters: z
-        .array(
-          z.object({
-            id: z.string().min(1),
-            availability: z.string(),
-          }),
-        )
-        .optional(),
-    }),
-  ),
+const gpu_plan_schema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+  memory: z.number().nonnegative(),
+  secure: z.boolean(),
+  price: z.object({ secure: z.number().nonnegative() }),
+  dataCenters: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        availability: z.string(),
+      }),
+    )
+    .optional(),
 });
+
+export const plans_schema = z.object({ gpus: z.array(gpu_plan_schema) });
+
+const gpu_machine_schema = gpu_plan_schema.extend({
+  availability: z.string().optional(),
+  maxCount: z.object({ secure: z.number().int().nonnegative() }).optional(),
+});
+
+export const machines_schema = z.object({
+  gpus: z.array(gpu_machine_schema),
+});
+
+function machineAvailability(value?: string): MachineOffer["availability"] {
+  switch (value) {
+    case "LOW":
+    case "MEDIUM":
+    case "HIGH":
+      return "available";
+    case "NONE":
+      return "unavailable";
+    default:
+      return "unknown";
+  }
+}
+
+export function normalizeMachine(
+  gpu: z.infer<typeof gpu_machine_schema>,
+  gpu_count: number,
+  region_id?: string,
+): MachineOffer {
+  const regions = gpu.dataCenters ?? [];
+  const availability = machineAvailability(
+    region_id === undefined
+      ? gpu.availability
+      : regions.find((region) => region.id === region_id)?.availability,
+  );
+  const hourly_cost = gpu.price.secure * gpu_count;
+  return {
+    provider_id: "runpod",
+    id: gpu.id,
+    name: gpu.name,
+    type: "gpu",
+    source: "plan",
+    availability:
+      gpu.maxCount !== undefined && gpu_count > gpu.maxCount.secure
+        ? "unavailable"
+        : availability,
+    region_ids: [
+      ...new Set(
+        regions
+          .filter(
+            (region) => region_id === undefined || region.id === region_id,
+          )
+          .map((region) => region.id),
+      ),
+    ],
+    gpu_name: gpu.name,
+    gpu_count,
+    gpu_memory_gb: gpu.memory,
+    ...(Number.isFinite(hourly_cost) ? { hourly_cost } : {}),
+    currency: "USD",
+  };
+}
 
 export function parseIdentifier(id: string): string {
   return parseInput(identifier_schema, id);

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AppError } from "../src/core/errors.ts";
-import type { EditInstanceInput } from "../src/core/provider.ts";
+import type { EditInstanceInput, MachineQuery } from "../src/core/provider.ts";
 import { VultrProvider } from "../src/providers/vultr/index.ts";
 
 const api_key = "test-api-key-not-for-real-requests";
@@ -595,6 +595,314 @@ describe("Vultr pagination and catalogs", () => {
       "/v2/os",
       "/v2/ssh-keys",
     ]);
+  });
+});
+
+function machinePlan(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "plan-1",
+    type: "vc2",
+    name: "Example plan",
+    vcpu_count: 2,
+    ram: 4096,
+    disk: 80,
+    monthly_cost: 12,
+    locations: ["nrt", "ewr"],
+    ...overrides,
+  };
+}
+
+function metalPlan(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "metal-plan-1",
+    cpu_count: 4,
+    cpu_threads: 8,
+    cpu_model: "Example CPU",
+    ram: 32768,
+    disk: 480,
+    disk_count: 1,
+    monthly_cost: 120,
+    locations: ["nrt"],
+    type: "SSD",
+    ...overrides,
+  };
+}
+
+describe("Vultr machine discovery", () => {
+  test("classifies explicit provider types without inferring from plan IDs", async () => {
+    const types = [
+      "vc2",
+      "vhf",
+      "vhp",
+      "vdc",
+      "voc",
+      "voc-g",
+      "voc-c",
+      "voc-m",
+      "voc-s",
+      "vx1",
+      "vcg",
+    ];
+    const { provider, requests } = harness([
+      json({
+        plans: [
+          ...types.map((type, index) =>
+            machinePlan({ id: `opaque-${index}`, type }),
+          ),
+          machinePlan({ id: "vc2-looking-id", type: "future-unknown" }),
+          machinePlan({ id: "vhf-looking-id", type: undefined }),
+        ],
+      }),
+      json({ plans_metal: [metalPlan({ id: "opaque-metal" })] }),
+    ]);
+
+    const result = await provider.listMachines();
+    expect(result.map((item) => [item.id, item.type])).toEqual([
+      ["opaque-0", "shared_cpu"],
+      ["opaque-1", "shared_cpu"],
+      ["opaque-2", "shared_cpu"],
+      ["opaque-3", "dedicated_cpu"],
+      ["opaque-4", "dedicated_cpu"],
+      ["opaque-5", "dedicated_cpu"],
+      ["opaque-6", "dedicated_cpu"],
+      ["opaque-7", "dedicated_cpu"],
+      ["opaque-8", "dedicated_cpu"],
+      ["opaque-9", "dedicated_cpu"],
+      ["opaque-10", "gpu"],
+      ["opaque-metal", "bare_metal"],
+    ]);
+    expect(result.every((item) => item.availability === "unknown")).toBe(true);
+    expect(result.every((item) => item.source === "plan")).toBe(true);
+    expect(provider.info.capabilities).toContain("machines");
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/v2/plans",
+      "/v2/plans-metal",
+    ]);
+    expect(requests.every((request) => request.method === "GET")).toBe(true);
+  });
+
+  test("normalizes CPU and GPU specifications without copying extra fields", async () => {
+    const { provider } = harness([
+      json({
+        plans: [
+          machinePlan({
+            id: "gpu-plan",
+            type: "vcg",
+            gpu_type: "Example GPU",
+            gpu_vram_gb: 24,
+            internal: "private-provider-field",
+          }),
+        ],
+      }),
+    ]);
+    expect(await provider.listMachines({ type: "gpu" })).toEqual([
+      {
+        provider_id: "vultr",
+        id: "gpu-plan",
+        name: "Example plan",
+        type: "gpu",
+        source: "plan",
+        availability: "unknown",
+        region_ids: ["nrt", "ewr"],
+        vcpu_count: 2,
+        memory_mb: 4096,
+        disk_gb: 80,
+        monthly_cost: 12,
+        currency: "USD",
+        gpu_name: "Example GPU",
+        gpu_memory_gb: 24,
+      },
+    ]);
+  });
+
+  test("normalizes bare metal separately from virtual dedicated CPU plans", async () => {
+    const { provider, requests } = harness([
+      json({ plans_metal: [metalPlan()] }),
+    ]);
+    const [result] = await provider.listMachines({ type: "bare_metal" });
+    expect(result).toMatchObject({
+      provider_id: "vultr",
+      id: "metal-plan-1",
+      name: "Example CPU",
+      type: "bare_metal",
+      source: "plan",
+      availability: "unknown",
+      region_ids: ["nrt"],
+      cpu_count: 4,
+      cpu_threads: 8,
+      cpu_model: "Example CPU",
+      memory_mb: 32768,
+      disk_gb: 480,
+      disk_size_gb: 480,
+      disk_count: 1,
+      monthly_cost: 120,
+      currency: "USD",
+    });
+    expect(result).not.toHaveProperty("vcpu_count");
+    expect(new URL(requests[0]?.url ?? "").pathname).toBe("/v2/plans-metal");
+  });
+
+  test("preserves physical drive configuration without assuming RAID capacity", async () => {
+    const { provider } = harness([
+      json({
+        plans_metal: [
+          metalPlan({ id: "multi-drive", disk: "480", disk_count: 2 }),
+          metalPlan({ id: "unknown-drive-count", disk_count: undefined }),
+        ],
+      }),
+    ]);
+    const result = await provider.listMachines({ type: "bare_metal" });
+    expect(result[0]).toMatchObject({ disk_size_gb: 480, disk_count: 2 });
+    expect(result[0]).not.toHaveProperty("disk_gb");
+    expect(result[1]).toMatchObject({ disk_size_gb: 480 });
+    expect(result[1]).not.toHaveProperty("disk_gb");
+    expect(result[1]).not.toHaveProperty("disk_count");
+  });
+
+  test("does not match a disk capacity filter when usable metal capacity is unknown", async () => {
+    const { provider } = harness([
+      json({
+        plans_metal: [
+          metalPlan({ id: "multi-drive", disk_count: 2 }),
+          metalPlan({ id: "single-drive" }),
+        ],
+      }),
+    ]);
+    expect(
+      (await provider.listMachines({ type: "bare_metal", disk_gb: 480 })).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["single-drive"]);
+  });
+
+  test.each(["", "480 GB", "-1", "9007199254740992"])(
+    "rejects unsafe metal disk size %j",
+    async (disk) => {
+      const { provider } = harness([
+        json({ plans_metal: [metalPlan({ disk })] }),
+      ]);
+      await expect(
+        provider.listMachines({ type: "bare_metal" }),
+      ).rejects.toMatchObject({ code: "invalid_response" });
+    },
+  );
+
+  test("checks current regional stock and preserves supported but sold-out plans", async () => {
+    const { provider, requests } = harness([
+      json({
+        plans: [
+          machinePlan({ id: "available" }),
+          machinePlan({ id: "sold-out" }),
+          machinePlan({ id: "elsewhere", locations: ["ewr"] }),
+          machinePlan({ id: "live-only", locations: [] }),
+        ],
+      }),
+      json({ available_plans: ["available", "live-only"] }),
+    ]);
+    expect(
+      (
+        await provider.listMachines({ type: "shared_cpu", region_id: "nrt" })
+      ).map((item) => [item.id, item.availability, item.region_ids]),
+    ).toEqual([
+      ["available", "available", ["nrt"]],
+      ["sold-out", "unavailable", ["nrt"]],
+      ["live-only", "available", ["nrt"]],
+    ]);
+    expect(requests[1]?.url).toBe(
+      "https://api.vultr.com/v2/regions/nrt/availability?type=all",
+    );
+  });
+
+  test("filters unavailable regional plans before applying the result limit", async () => {
+    const { provider } = harness([
+      json({
+        plans: [
+          machinePlan({ id: "sold-out" }),
+          machinePlan({ id: "small", disk: 10 }),
+          machinePlan({ id: "match" }),
+          machinePlan({ id: "extra" }),
+        ],
+      }),
+      json({ available_plans: ["small", "match", "extra"] }),
+    ]);
+    const result = await provider.listMachines({
+      type: "shared_cpu",
+      region_id: "nrt",
+      disk_gb: 80,
+      available_only: true,
+      limit: 1,
+    });
+    expect(result.map((item) => item.id)).toEqual(["match"]);
+  });
+
+  test("paginates the bare-metal catalog using its own envelope", async () => {
+    const { provider, requests } = harness([
+      json({
+        plans_metal: [metalPlan()],
+        meta: { links: { next: "metal-page-2" } },
+      }),
+      json({ plans_metal: [metalPlan({ id: "metal-plan-2" })] }),
+    ]);
+    expect(
+      (await provider.listMachines({ type: "bare_metal" })).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["metal-plan-1", "metal-plan-2"]);
+    expect(new URL(requests[1]?.url ?? "").searchParams.get("cursor")).toBe(
+      "metal-page-2",
+    );
+  });
+
+  test.each([
+    ["shared_cpu", "plans"],
+    ["bare_metal", "plans_metal"],
+  ] as const)("rejects malformed %s specifications", async (type, field) => {
+    const { provider } = harness([
+      json({ [field]: [{ id: "private-provider-field", type: "vc2" }] }),
+    ]);
+    const error = await provider
+      .listMachines({ type })
+      .catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: "invalid_response" });
+    expect(String(error)).not.toContain("private-provider-field");
+  });
+
+  test("does not silently turn stock-check failures into availability", async () => {
+    const { provider } = harness([
+      json({ plans: [machinePlan()] }),
+      json({ error: "Unavailable stock service" }, 503),
+    ]);
+    await expect(
+      provider.listMachines({ type: "shared_cpu", region_id: "nrt" }),
+    ).rejects.toMatchObject({ code: "provider_error" });
+  });
+
+  test("rejects malformed stock responses", async () => {
+    const { provider } = harness([
+      json({ plans_metal: [metalPlan()] }),
+      json({ available_plans: "metal-plan-1" }),
+    ]);
+    await expect(
+      provider.listMachines({ type: "bare_metal", region_id: "nrt" }),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  test.each([
+    { type: "unknown" },
+    { type: "shared_cpu", region_id: "../nrt" },
+    { type: "shared_cpu", available_only: true },
+    { type: "shared_cpu", limit: 101 },
+    { type: "shared_cpu", disk_gb: -1 },
+  ])("validates discovery inputs before any request: %j", async (query) => {
+    const { provider, requests } = harness([]);
+    await expect(
+      provider.listMachines(query as MachineQuery),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(requests).toHaveLength(0);
   });
 });
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AppError } from "../../core/errors.ts";
+import { filterMachines, validateMachineQuery } from "../../core/machines.ts";
 import type {
   AccountMetadata,
   CreateInstanceInput,
@@ -7,6 +8,8 @@ import type {
   Image,
   Instance,
   InstanceListOptions,
+  MachineOffer,
+  MachineQuery,
   Plan,
   Provider,
   ProviderInfo,
@@ -14,6 +17,13 @@ import type {
   Region,
   SshKey,
 } from "../../core/provider.ts";
+import {
+  availability_schema,
+  machine_plan_schema,
+  metal_plan_schema,
+  normalizeMachinePlan,
+  normalizeMetalPlan,
+} from "./machines.ts";
 import {
   account_schema,
   createBody,
@@ -52,6 +62,7 @@ export const vultr_info: ProviderInfo = {
     "reboot",
     "regions",
     "plans",
+    "machines",
     "images",
     "ssh_keys",
     "account_metadata",
@@ -184,6 +195,61 @@ export class VultrProvider implements Provider {
     return region_id === undefined
       ? plans
       : plans.filter((plan) => plan.region_ids.includes(region_id));
+  }
+
+  async listMachines(query?: MachineQuery): Promise<MachineOffer[]> {
+    const value = validateMachineQuery(query);
+    if (value.region_id !== undefined) {
+      validateInput(identifier_schema, value.region_id);
+    }
+    if (value.available_only && value.region_id === undefined) {
+      throw new AppError(
+        "invalid_input",
+        "Vultr requires --region with --available to check current stock.",
+      );
+    }
+
+    const [plans, metal_plans, availability] = await Promise.all([
+      value.type === "bare_metal"
+        ? []
+        : this.#list("/plans", "plans", machine_plan_schema),
+      value.type !== undefined && value.type !== "bare_metal"
+        ? []
+        : this.#list("/plans-metal", "plans_metal", metal_plan_schema),
+      value.region_id === undefined
+        ? undefined
+        : this.#transport
+            .request(
+              `/regions/${encodeURIComponent(value.region_id)}/availability?type=all`,
+            )
+            .then((response) =>
+              validateResponse(availability_schema, response),
+            ),
+    ]);
+    let machines = [
+      ...plans
+        .map(normalizeMachinePlan)
+        .filter((plan): plan is MachineOffer => plan !== undefined),
+      ...metal_plans.map(normalizeMetalPlan),
+    ];
+    if (value.region_id !== undefined && availability !== undefined) {
+      const region_id = value.region_id;
+      const available_ids = new Set(availability.available_plans);
+      machines = machines
+        .filter(
+          (machine) =>
+            machine.region_ids.includes(region_id) ||
+            available_ids.has(machine.id),
+        )
+        .map((machine) => ({
+          ...machine,
+          region_ids: [region_id],
+          availability: available_ids.has(machine.id)
+            ? "available"
+            : "unavailable",
+        }));
+    }
+    return filterMachines(machines, value);
   }
 
   async listImages(): Promise<Image[]> {

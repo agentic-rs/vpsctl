@@ -656,3 +656,193 @@ describe("RunPod catalogs", () => {
     expect(requests).toHaveLength(0);
   });
 });
+
+function machineGpu(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "example-gpu",
+    name: "Example GPU",
+    memory: 24,
+    secure: true,
+    price: { secure: 0.44 },
+    maxCount: { secure: 8, community: 4 },
+    availability: "HIGH",
+    dataCenters: [
+      { id: "DC-1", availability: "HIGH" },
+      { id: "DC-2", availability: "NONE" },
+    ],
+    ...overrides,
+  };
+}
+
+describe("RunPod machine discovery", () => {
+  test("queries count-specific Secure Cloud Pod capacity and total GPU list price", async () => {
+    const { provider, requests } = harness([
+      Response.json({
+        gpus: [
+          machineGpu({ private_value: "private-provider-data" }),
+          machineGpu({ id: "community-gpu", secure: false }),
+        ],
+      }),
+    ]);
+    const machines = await provider.listMachines({ gpu_count: 2 });
+    expect(machines).toEqual([
+      {
+        provider_id: "runpod",
+        id: "example-gpu",
+        name: "Example GPU",
+        type: "gpu",
+        source: "plan",
+        availability: "available",
+        region_ids: ["DC-1", "DC-2"],
+        gpu_name: "Example GPU",
+        gpu_count: 2,
+        gpu_memory_gb: 24,
+        hourly_cost: 0.88,
+        currency: "USD",
+      },
+    ]);
+    expect(JSON.stringify(machines)).not.toContain("private");
+    expect(machines[0]?.memory_mb).toBeUndefined();
+    expect(machines[0]?.monthly_cost).toBeUndefined();
+    const request = requests[0];
+    expect(request?.method).toBe("GET");
+    const url = new URL(request?.url ?? "");
+    expect(url.pathname).toBe("/v2/catalog/gpus");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      include: "AVAILABILITY",
+      product: "POD",
+      cloud: "SECURE",
+      count: "2",
+    });
+    expect(provider.info.capabilities).toContain("machines");
+  });
+
+  test("uses the selected datacenter's stock instead of global stock", async () => {
+    const { provider } = harness([
+      Response.json({ gpus: [machineGpu()] }),
+      Response.json({ gpus: [machineGpu()] }),
+      Response.json({ gpus: [machineGpu()] }),
+    ]);
+    const machines = await provider.listMachines({ region_id: "DC-2" });
+    expect(machines).toHaveLength(1);
+    expect(machines[0]?.availability).toBe("unavailable");
+    expect(machines[0]?.region_ids).toEqual(["DC-2"]);
+    expect(
+      await provider.listMachines({
+        region_id: "DC-2",
+        available_only: true,
+      }),
+    ).toEqual([]);
+    expect(
+      await provider.listMachines({
+        region_id: "DC-1",
+        available_only: true,
+      }),
+    ).toHaveLength(1);
+  });
+
+  test("does not invent datacenter coverage when expansions are absent", async () => {
+    const { provider } = harness([
+      Response.json({
+        gpus: [machineGpu({ availability: "NONE", dataCenters: undefined })],
+      }),
+      Response.json({
+        gpus: [machineGpu({ availability: "NONE", dataCenters: undefined })],
+      }),
+    ]);
+    expect(await provider.listMachines()).toEqual([
+      expect.objectContaining({
+        availability: "unavailable",
+        region_ids: [],
+      }),
+    ]);
+    expect(await provider.listMachines({ region_id: "DC-1" })).toEqual([]);
+  });
+
+  test.each([undefined, "FUTURE"])(
+    "reports missing or unfamiliar stock %s as unknown",
+    async (availability) => {
+      const { provider } = harness([
+        Response.json({ gpus: [machineGpu({ availability })] }),
+        Response.json({ gpus: [machineGpu({ availability })] }),
+      ]);
+      expect((await provider.listMachines())[0]?.availability).toBe("unknown");
+      expect(await provider.listMachines({ available_only: true })).toEqual([]);
+    },
+  );
+
+  test("a GPU count ceiling is not a claim of available capacity", async () => {
+    const { provider } = harness([
+      Response.json({
+        gpus: [machineGpu({ maxCount: { secure: 1 } })],
+      }),
+      Response.json({ gpus: [machineGpu({ availability: "NONE" })] }),
+    ]);
+    expect(
+      (await provider.listMachines({ gpu_count: 2 }))[0]?.availability,
+    ).toBe("unavailable");
+    expect((await provider.listMachines())[0]?.availability).toBe(
+      "unavailable",
+    );
+  });
+
+  test("filters names and limits without fabricating a preset disk or system RAM", async () => {
+    const gpus = [
+      machineGpu(),
+      machineGpu({ id: "other-gpu", name: "Other GPU" }),
+    ];
+    const { provider } = harness([
+      Response.json({ gpus }),
+      Response.json({ gpus }),
+    ]);
+    const machines = await provider.listMachines({
+      gpu_name: "Other GPU",
+      limit: 1,
+    });
+    expect(machines.map((machine) => machine.id)).toEqual(["other-gpu"]);
+    expect(machines[0]?.disk_gb).toBeUndefined();
+    expect(await provider.listMachines({ disk_gb: 40 })).toEqual([]);
+  });
+
+  test.each(["shared_cpu", "dedicated_cpu", "bare_metal"] as const)(
+    "does not invent RunPod %s tenancy or perform unrelated requests",
+    async (type) => {
+      const { provider, requests } = harness([]);
+      expect(await provider.listMachines({ type })).toEqual([]);
+      expect(requests).toHaveLength(0);
+    },
+  );
+
+  test.each([
+    { gpu_count: 0 },
+    { region_id: " " },
+    { limit: 101 },
+    { type: "shared_cpu", gpu_name: "Example GPU" },
+  ] as const)("rejects invalid filters before HTTP", async (query) => {
+    const { provider, requests } = harness([]);
+    await expect(provider.listMachines(query)).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    expect(requests).toHaveLength(0);
+  });
+
+  test("rejects malformed catalog facts without exposing the response", async () => {
+    const { provider } = harness([
+      Response.json({
+        gpus: [
+          machineGpu({
+            price: { secure: "private-provider-data" },
+            availability: "HIGH",
+          }),
+        ],
+      }),
+    ]);
+    const error = await provider
+      .listMachines()
+      .catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: "invalid_response" });
+    expect(String(error)).not.toContain("private-provider-data");
+  });
+});
