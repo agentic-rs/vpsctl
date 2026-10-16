@@ -46,6 +46,21 @@ const query_schema = z
       .optional(),
     gpu_count: z.number().int().positive().optional(),
     disk_gb: positive.optional(),
+    min_vcpu: z.number().int().positive().safe().optional(),
+    min_memory_gb: z
+      .number()
+      .int()
+      .positive()
+      .safe()
+      .refine((value) => Number.isSafeInteger(value * 1024))
+      .optional(),
+    min_gpu_memory_gb: z
+      .number()
+      .int()
+      .positive()
+      .safe()
+      .refine((value) => Number.isSafeInteger(value * 1000))
+      .optional(),
     limit: z.number().int().min(1).max(100).optional(),
   })
   .strict();
@@ -247,6 +262,15 @@ export function offerBody(query: OfferQuery = {}): Record<string, unknown> {
     ...(value.gpu_count === undefined
       ? {}
       : { num_gpus: { eq: value.gpu_count } }),
+    ...(value.min_vcpu === undefined
+      ? {}
+      : { cpu_cores_effective: { gte: value.min_vcpu } }),
+    ...(value.min_memory_gb === undefined
+      ? {}
+      : { cpu_ram: { gte: value.min_memory_gb * 1024 } }),
+    ...(value.min_gpu_memory_gb === undefined
+      ? {}
+      : { gpu_ram: { gte: value.min_gpu_memory_gb * 1000 } }),
     ...(value.disk_gb === undefined
       ? {}
       : {

@@ -21,11 +21,7 @@ import type {
   CommonOptions,
   Mutation,
 } from "./context.ts";
-import {
-  type CreateReview,
-  formatCreateReview,
-  prepareCreate,
-} from "./create.ts";
+import { type CreateReview, prepareCreate } from "./create.ts";
 import { registerCredentialCommands } from "./credential.ts";
 import { nonblank } from "./input.ts";
 import { registerInstanceCommands } from "./instances.ts";
@@ -146,6 +142,14 @@ export async function runCli(
     );
     registry.validateAccount(account);
     const definition = registry.get(account.provider_id);
+    const notice = [
+      mutation.notice,
+      definition.info.operation_notes?.[
+        mutation.action.split(".")[1] as InstanceAction
+      ],
+    ]
+      .filter(Boolean)
+      .join(" ");
     let create_input: CreateInstanceInput | undefined;
     let review: CreateReview | undefined;
     let prepared_provider: Provider | undefined;
@@ -169,6 +173,14 @@ export async function runCli(
           definition.create_guidance,
           io,
           prepared_provider,
+          {
+            account_name: display_id,
+            notice,
+            dry_run: Boolean(flags.dry_run),
+            ...(definition.validateCreateInput
+              ? { validate_input: definition.validateCreateInput }
+              : {}),
+          },
         );
         create_input = prepared.input;
         review = prepared.review;
@@ -185,35 +197,9 @@ export async function runCli(
       ...((create_input ?? mutation.input)
         ? { input: create_input ?? mutation.input }
         : {}),
-      notice: [
-        mutation.notice,
-        definition.info.operation_notes?.[
-          mutation.action.split(".")[1] as InstanceAction
-        ],
-      ]
-        .filter(Boolean)
-        .join(" "),
-    };
-    const review_text =
-      review && create_input
-        ? `${formatCreateReview(display_id, account.provider_id, create_input, review)}\n${preview.notice}`
-        : undefined;
-    const showCreateReview = (dry_run: boolean): void => {
-      if (review_text === undefined) return;
-      const text = dry_run
-        ? `${review_text}\nDry run: no instance will be created.`
-        : review_text;
-      if (io.note) {
-        io.note(
-          text,
-          dry_run ? "Dry-run instance creation" : "Review instance creation",
-        );
-      } else {
-        io.write_err(`${text}\n`);
-      }
+      notice,
     };
     if (flags.dry_run) {
-      showCreateReview(true);
       print(command, mutation.action, { ...preview, dry_run: true });
       return;
     }
@@ -229,9 +215,7 @@ export async function runCli(
             : "Changes require --yes in noninteractive mode. Use --dry-run to preview.",
         );
       }
-      if (review_text !== undefined) {
-        showCreateReview(false);
-      } else {
+      if (review === undefined) {
         io.write_err(`${JSON.stringify(preview, null, 2)}\n`);
       }
       if (

@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PromptOption } from "../src/commands/context.ts";
+import type {
+  PromptOption,
+  PromptSelectOptions,
+  TextPromptOptions,
+} from "../src/commands/context.ts";
 import { type CliIO, runCli } from "../src/commands/program.ts";
 import { AccountStore } from "../src/core/accounts.ts";
 import { AppError } from "../src/core/errors.ts";
@@ -26,9 +30,13 @@ interface FixtureOptions {
 interface RunOptions {
   interactive?: boolean;
   confirmation?: boolean;
-  selections?: Record<string, string>;
-  text?: Record<string, string>;
+  selections?: Record<string, string | string[]>;
+  text?: Record<string, string | string[]>;
   cancel_prompt?: string;
+  cancel_progress?: {
+    message: string;
+    timing: "before" | "during";
+  };
 }
 
 const temp_dirs: string[] = [];
@@ -74,6 +82,7 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
   const queries: MachineQuery[] = [];
   const creates: CreateInstanceInput[] = [];
   const reads: string[] = [];
+  const trace: string[] = [];
   let connections = 0;
   let machines = [machine(provider_id)];
   let discovery_error: AppError | undefined;
@@ -83,6 +92,7 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
     info: definition.info,
     async listMachines(query = {}) {
       reads.push("machines");
+      trace.push("read:machines");
       queries.push({ ...query });
       if (discovery_error) throw discovery_error;
       const quoted = machines.map((entry) =>
@@ -102,10 +112,12 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
     },
     async listRegions() {
       reads.push("regions");
+      trace.push("read:regions");
       return [{ id: "test-region", name: "Example region", country: "XX" }];
     },
     async listImages() {
       reads.push("images");
+      trace.push("read:images");
       return [
         {
           id: "101",
@@ -117,6 +129,7 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
     },
     async createInstance(input) {
       creates.push({ ...input });
+      trace.push("create");
       return { provider_id, id: "created-example", status: "accepted" };
     },
     async listInstances() {
@@ -156,14 +169,42 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
   };
   const registry = new ProviderRegistry([mocked_definition]);
   const run = async (args: string[] = [], options: RunOptions = {}) => {
+    const selection_inputs = Object.fromEntries(
+      Object.entries(options.selections ?? {}).map(([message, value]) => [
+        message,
+        Array.isArray(value) ? [...value] : value,
+      ]),
+    );
+    const text_inputs = Object.fromEntries(
+      Object.entries(options.text ?? {}).map(([message, value]) => [
+        message,
+        Array.isArray(value) ? [...value] : value,
+      ]),
+    );
+    const nextInput = (
+      inputs: Record<string, string | string[]>,
+      message: string,
+    ) => {
+      const value = inputs[message];
+      return Array.isArray(value) ? value.shift() : value;
+    };
     const output: string[] = [];
     const errors: string[] = [];
     const notes: string[] = [];
     const note_titles: string[] = [];
     const events: string[] = [];
     const text_prompts: string[] = [];
-    const selections: { message: string; options: PromptOption[] }[] = [];
+    const text_prompt_options: {
+      message: string;
+      options?: TextPromptOptions;
+    }[] = [];
+    const selections: {
+      message: string;
+      options: PromptOption[];
+      prompt_options?: PromptSelectOptions;
+    }[] = [];
     const confirmations: string[] = [];
+    const progress_events: string[] = [];
     const cancelled = (message: string) => {
       if (options.cancel_prompt === message) {
         throw new AppError("cancelled", "Operation cancelled.");
@@ -178,16 +219,26 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
         errors.push(text);
         events.push(text);
       },
-      async select(message, choices) {
+      async select(message, choices, prompt_options) {
         cancelled(message);
-        selections.push({ message, options: choices });
-        return options.selections?.[message] ?? choices[0]?.value ?? "";
+        trace.push(`select:${message}`);
+        selections.push({
+          message,
+          options: choices,
+          ...(prompt_options === undefined ? {} : { prompt_options }),
+        });
+        return nextInput(selection_inputs, message) ?? choices[0]?.value ?? "";
       },
       async read_text(message, prompt_options) {
         cancelled(message);
+        trace.push(`text:${message}`);
         text_prompts.push(message);
+        text_prompt_options.push({
+          message,
+          ...(prompt_options === undefined ? {} : { options: prompt_options }),
+        });
         return (
-          options.text?.[message] ??
+          nextInput(text_inputs, message) ??
           prompt_options?.initial_value ??
           (message === "Docker image" ? "example/image:latest" : "")
         );
@@ -197,8 +248,28 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
         if (title) note_titles.push(title);
         events.push(message);
       },
+      progress(message) {
+        progress_events.push(`start:${message}`);
+        const controller = new AbortController();
+        if (options.cancel_progress?.message === message) {
+          const cancel = () =>
+            controller.abort(new AppError("cancelled", "Operation cancelled."));
+          if (options.cancel_progress.timing === "before") cancel();
+          else queueMicrotask(cancel);
+        }
+        return {
+          signal: controller.signal,
+          stop() {
+            progress_events.push(`stop:${message}`);
+          },
+          fail() {
+            progress_events.push(`fail:${message}`);
+          },
+        };
+      },
       async confirm(message) {
         cancelled(message);
+        trace.push(`confirm:${message}`);
         confirmations.push(message);
         events.push("confirmed");
         return options.confirmation ?? true;
@@ -216,8 +287,10 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
       note_titles,
       events,
       text_prompts,
+      text_prompt_options,
       selections,
       confirmations,
+      progress_events,
     };
   };
   return {
@@ -226,6 +299,7 @@ async function fixture(provider_id: ProviderId, options: FixtureOptions = {}) {
     creates,
     queries,
     reads,
+    trace,
     get connections() {
       return connections;
     },
@@ -277,7 +351,8 @@ describe("guided instance creation", () => {
     const picker = result.selections.find(
       (entry) => entry.message === "Choose a machine",
     );
-    expect(picker?.options[0]?.hint).toContain("$ 6/month");
+    expect(picker?.options[0]?.label).toContain("$ 6/month");
+    expect(picker?.prompt_options?.searchable).toBe(true);
     expect(setup.connections).toBe(1);
   });
 
@@ -383,7 +458,9 @@ describe("guided instance creation", () => {
         enable_ipv6: true,
       },
     ]);
-    expect(result.selections).toEqual([]);
+    expect(result.selections.map((entry) => entry.message)).toEqual([
+      "What next?",
+    ]);
     expect(result.text_prompts).toEqual([]);
     expect(result.confirmations).toHaveLength(1);
     expect(result.review).toContain("Hostname: example-host");
@@ -415,8 +492,10 @@ describe("guided instance creation", () => {
   });
 
   for (const prompt of [
+    "Requirements",
     "Choose a machine",
     "Instance label",
+    "What next?",
     "Create this billable instance?",
   ]) {
     test(`cancelling ${prompt} does not write`, async () => {
@@ -437,12 +516,19 @@ describe("guided instance creation", () => {
     expect(setup.creates).toEqual([]);
   });
 
-  test("no available machines produces an actionable error without confirmation", async () => {
+  test("no available machines offers recovery without confirmation", async () => {
     const setup = await fixture("vultr");
     setup.setMachines([]);
-    const result = await setup.run();
-    expect(result.exit_code).toBe(1);
-    expect(result.stderr).toContain("No available machines");
+    const result = await setup.run([], {
+      selections: { "No matching machines": "cancel" },
+    });
+    expect(result.exit_code).toBe(130);
+    expect(result.review).toContain("No available machines");
+    expect(
+      result.selections
+        .find((entry) => entry.message === "No matching machines")
+        ?.options.map((option) => option.value),
+    ).toEqual(["requirements", "cancel"]);
     expect(result.confirmations).toEqual([]);
     expect(setup.creates).toEqual([]);
   });
@@ -456,8 +542,10 @@ describe("guided instance creation", () => {
       ],
       true,
     );
-    const result = await setup.run();
-    expect(result.exit_code).toBe(1);
+    const result = await setup.run([], {
+      selections: { "No matching machines": "cancel" },
+    });
+    expect(result.exit_code).toBe(130);
     expect(result.confirmations).toEqual([]);
     expect(setup.creates).toEqual([]);
   });
@@ -521,6 +609,567 @@ describe("guided instance creation", () => {
   });
 });
 
+describe("requirements-first creation wizard", () => {
+  for (const provider_id of ["vultr", "runpod", "vast"] as const) {
+    test(`${provider_id} gathers requirements before comparing matching machines`, async () => {
+      const setup = await fixture(provider_id);
+      const result = await setup.run([], {
+        selections: {
+          Requirements: ["min_vcpu", "min_memory_gb", "compare"],
+        },
+        text: {
+          "Minimum vCPUs": "2",
+          "Minimum RAM (GB)": "4",
+        },
+      });
+
+      expect(result.exit_code).toBe(0);
+      expect(setup.trace.indexOf("text:Minimum vCPUs")).toBeLessThan(
+        setup.trace.indexOf("read:machines"),
+      );
+      expect(setup.trace.indexOf("text:Minimum RAM (GB)")).toBeLessThan(
+        setup.trace.indexOf("read:machines"),
+      );
+      expect(setup.queries).toHaveLength(1);
+      expect(result.note_titles).toContain("Requirements");
+      expect(
+        result.selections.find((entry) => entry.message === "Choose a machine")
+          ?.prompt_options?.searchable,
+      ).toBe(true);
+      expect(setup.creates).toHaveLength(1);
+      if (provider_id === "runpod") {
+        expect(
+          setup.trace.indexOf("text:Container disk size (GB)"),
+        ).toBeGreaterThan(setup.trace.indexOf("select:Choose a machine"));
+      }
+      if (provider_id === "vast") {
+        expect(
+          setup.trace.indexOf("text:Container disk size (GB)"),
+        ).toBeLessThan(setup.trace.indexOf("read:machines"));
+      }
+    });
+  }
+
+  test("CPU and RAM requirements exclude insufficient or unknown specifications", async () => {
+    const setup = await fixture("vultr");
+    const { vcpu_count: _, memory_mb: __, ...unknown_specs } = machine("vultr");
+    setup.setMachines(
+      [
+        { ...machine("vultr"), id: "too-small" },
+        { ...unknown_specs, id: "unknown-specs" },
+        {
+          ...machine("vultr"),
+          id: "matching-plan",
+          vcpu_count: 4,
+          memory_mb: 8192,
+        },
+      ],
+      true,
+    );
+    const result = await setup.run([], {
+      selections: {
+        Requirements: ["min_vcpu", "min_memory_gb", "compare"],
+      },
+      text: { "Minimum vCPUs": "4", "Minimum RAM (GB)": "8" },
+    });
+
+    expect(result.exit_code).toBe(0);
+    const choices = result.selections.find(
+      (entry) => entry.message === "Choose a machine",
+    )?.options;
+    expect(choices?.map((option) => option.value)).toEqual([
+      "matching-plan",
+      "__back__",
+    ]);
+    expect(setup.creates[0]?.plan_id).toBe("matching-plan");
+    expect(setup.queries[0]).toEqual({
+      available_only: true,
+      type: "shared_cpu",
+      region_id: "test-region",
+      min_vcpu: 4,
+      min_memory_gb: 8,
+    });
+  });
+
+  test("GPU memory requirements exclude missing and undersized GPU memory", async () => {
+    const setup = await fixture("runpod");
+    setup.setMachines(
+      [
+        { ...machine("runpod"), id: "unknown-memory" },
+        { ...machine("runpod"), id: "small-memory", gpu_memory_gb: 12 },
+        { ...machine("runpod"), id: "matching-gpu", gpu_memory_gb: 24 },
+      ],
+      true,
+    );
+    const result = await setup.run([], {
+      selections: {
+        Requirements: ["min_gpu_memory_gb", "compare"],
+      },
+      text: { "Minimum GPU memory (GB)": "24" },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(
+      result.selections
+        .find((entry) => entry.message === "Choose a machine")
+        ?.options.map((option) => option.value),
+    ).toEqual(["matching-gpu", "__back__"]);
+    expect(setup.creates[0]?.plan_id).toBe("matching-gpu");
+    expect(setup.queries[0]?.min_gpu_memory_gb).toBe(24);
+  });
+
+  test("machine comparison sorts comparable prices and leaves unpriced machines last", async () => {
+    const setup = await fixture("vultr");
+    const { monthly_cost: _, ...unpriced } = machine("vultr");
+    setup.setMachines([
+      { ...machine("vultr"), id: "expensive", monthly_cost: 12 },
+      { ...unpriced, id: "unknown-price" },
+      { ...machine("vultr"), id: "zeta", monthly_cost: 6 },
+      { ...machine("vultr"), id: "alpha", monthly_cost: 6 },
+      { ...machine("vultr"), id: "cheapest", monthly_cost: 3 },
+    ]);
+    const result = await setup.run();
+
+    expect(result.exit_code).toBe(0);
+    const picker = result.selections.find(
+      (entry) => entry.message === "Choose a machine",
+    );
+    expect(picker?.options.map((option) => option.value)).toEqual([
+      "cheapest",
+      "alpha",
+      "zeta",
+      "expensive",
+      "unknown-price",
+      "__back__",
+    ]);
+    expect(picker?.prompt_options?.searchable).toBe(true);
+    expect(picker?.options[0]?.label).toContain("$ 3/month");
+    expect(setup.creates[0]?.plan_id).toBe("cheapest");
+  });
+
+  test("Back to requirements changes the category and refreshes matching machines", async () => {
+    const setup = await fixture("vultr");
+    setup.setMachines([
+      machine("vultr"),
+      {
+        ...machine("vultr"),
+        id: "dedicated-large",
+        type: "dedicated_cpu",
+        monthly_cost: 30,
+      },
+    ]);
+    const result = await setup.run([], {
+      selections: {
+        "Choose a machine type": ["shared_cpu", "dedicated_cpu"],
+        Requirements: ["compare", "type", "compare"],
+        "Choose a machine": ["__back__", "dedicated-large"],
+      },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries.map((query) => query.type)).toEqual([
+      "shared_cpu",
+      "dedicated_cpu",
+    ]);
+    expect(setup.creates).toHaveLength(1);
+    expect(setup.creates[0]?.plan_id).toBe("dedicated-large");
+    expect(result.confirmations).toEqual(["Create this billable instance?"]);
+  });
+
+  test("requirements changed from review invalidate the machine and refresh its GPU quote", async () => {
+    const setup = await fixture("runpod");
+    setup.setMachines([
+      machine("runpod"),
+      { ...machine("runpod"), id: "gpu-next" },
+    ]);
+    const result = await setup.run([], {
+      selections: {
+        Requirements: ["compare", "gpu_count", "compare"],
+        "Choose a machine": ["gpu-example", "gpu-next"],
+        "What next?": ["requirements", "continue"],
+      },
+      text: { "GPU count": ["1", "3"] },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toEqual([
+      { available_only: true, type: "gpu", gpu_count: 1 },
+      { available_only: true, type: "gpu", gpu_count: 3 },
+    ]);
+    expect(setup.creates).toHaveLength(1);
+    expect(setup.creates[0]).toMatchObject({
+      plan_id: "gpu-next",
+      gpu_count: 3,
+      image_id: "example/image:latest",
+      disk_gb: 40,
+    });
+    expect(result.review).toContain("$ 0.75/hour");
+    expect(result.review).toContain("$ 2.25/hour");
+    expect(
+      result.text_prompts.filter((prompt) => prompt === "Docker image"),
+    ).toHaveLength(1);
+  });
+
+  test("no-match recovery lets users relax requirements and compare again", async () => {
+    const setup = await fixture("vultr");
+    const result = await setup.run([], {
+      selections: {
+        Requirements: ["min_memory_gb", "compare", "min_memory_gb", "compare"],
+        "No matching machines": "requirements",
+      },
+      text: { "Minimum RAM (GB)": ["128", "4"] },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toHaveLength(2);
+    expect(
+      result.selections.filter(
+        (entry) => entry.message === "No matching machines",
+      ),
+    ).toHaveLength(1);
+    expect(
+      result.selections.filter((entry) => entry.message === "Choose a machine"),
+    ).toHaveLength(1);
+    expect(setup.creates).toHaveLength(1);
+    expect(result.confirmations).toHaveLength(1);
+  });
+
+  test("zero clears a minimum requirement after an empty comparison", async () => {
+    const setup = await fixture("vultr");
+    const result = await setup.run([], {
+      selections: {
+        Requirements: ["min_vcpu", "compare", "min_vcpu", "compare"],
+        "No matching machines": "requirements",
+      },
+      text: { "Minimum vCPUs": ["4", "0"] },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toHaveLength(2);
+    expect(setup.creates[0]?.plan_id).toBe("shared-small");
+    expect(result.review).toContain("Minimum vCPUs: Any");
+    expect(setup.queries[0]?.min_vcpu).toBe(4);
+    expect(setup.queries[1]).not.toHaveProperty("min_vcpu");
+  });
+
+  test("a provider machine ID cannot collide with Back navigation", async () => {
+    const setup = await fixture("runpod");
+    setup.setMachines([{ ...machine("runpod"), id: "__back__" }]);
+    const result = await setup.run();
+
+    expect(result.exit_code).toBe(0);
+    const choices = result.selections.find(
+      (entry) => entry.message === "Choose a machine",
+    )?.options;
+    expect(choices?.[0]?.value).toBe("__back__");
+    expect(choices?.at(-1)?.value).not.toBe("__back__");
+    expect(choices?.at(-1)?.label).toBe("Back to requirements");
+    expect(setup.creates[0]?.plan_id).toBe("__back__");
+    expect(setup.queries).toHaveLength(1);
+  });
+
+  for (const timing of ["before", "during"] as const) {
+    test(`cancelling ${timing} machine discovery stops before selection or creation`, async () => {
+      const setup = await fixture("vultr");
+      const before = await readFile(setup.config_path, "utf8");
+      const result = await setup.run([], {
+        cancel_progress: { message: "Finding matching machines", timing },
+      });
+
+      expect(result.exit_code).toBe(130);
+      expect(setup.queries).toHaveLength(timing === "before" ? 0 : 1);
+      expect(result.progress_events).toContain(
+        "fail:Finding matching machines",
+      );
+      expect(
+        result.selections.some((entry) => entry.message === "Choose a machine"),
+      ).toBe(false);
+      expect(setup.creates).toEqual([]);
+      expect(result.confirmations).toEqual([]);
+      expect(await readFile(setup.config_path, "utf8")).toBe(before);
+    });
+  }
+
+  test("a different machine can be chosen from review without repeating discovery or configuration", async () => {
+    const setup = await fixture("vultr");
+    setup.setMachines([
+      machine("vultr"),
+      { ...machine("vultr"), id: "shared-large", monthly_cost: 12 },
+    ]);
+    const result = await setup.run([], {
+      selections: {
+        "What next?": ["machine", "continue"],
+        "Choose a machine": ["shared-small", "shared-large"],
+      },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toHaveLength(1);
+    expect(setup.creates[0]?.plan_id).toBe("shared-large");
+    expect(
+      result.text_prompts.filter((prompt) => prompt === "Instance label"),
+    ).toHaveLength(1);
+    expect(setup.reads.filter((read) => read === "images")).toHaveLength(1);
+  });
+
+  test("editing a supplied label retains all other supplied configuration", async () => {
+    const setup = await fixture("vultr");
+    const result = await setup.run(
+      [
+        "--plan",
+        "shared-small",
+        "--region",
+        "test-region",
+        "--image",
+        "101",
+        "--label",
+        "original-label",
+        "--hostname",
+        "example-host",
+        "--tag",
+        "example-tag",
+        "--ssh-key",
+        "example-key",
+        "--enable-ipv6",
+      ],
+      {
+        selections: {
+          "What next?": ["configuration", "continue"],
+          "Edit configuration": ["label", "done"],
+        },
+        text: { "Instance label": "updated-label" },
+      },
+    );
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toHaveLength(1);
+    expect(setup.creates).toEqual([
+      {
+        plan_id: "shared-small",
+        region_id: "test-region",
+        image_id: "101",
+        label: "updated-label",
+        hostname: "example-host",
+        tags: ["example-tag"],
+        ssh_key_ids: ["example-key"],
+        enable_ipv6: true,
+      },
+    ]);
+    expect(
+      result.text_prompt_options.find(
+        (entry) => entry.message === "Instance label",
+      )?.options?.initial_value,
+    ).toBe("original-label");
+    expect(result.confirmations).toHaveLength(1);
+  });
+
+  test("editing an unsafe supplied label displays safe text without prefilling control characters", async () => {
+    const setup = await fixture("vultr");
+    const result = await setup.run(
+      [
+        "--plan",
+        "shared-small",
+        "--region",
+        "test-region",
+        "--image",
+        "101",
+        "--label",
+        "unsafe\u001b[31mlabel",
+      ],
+      {
+        selections: {
+          "What next?": ["configuration", "continue"],
+          "Edit configuration": ["label", "done"],
+        },
+        text: { "Instance label": "safe-label" },
+      },
+    );
+
+    expect(result.exit_code).toBe(0);
+    expect(result.review).toContain("Label: unsafe [31mlabel");
+    expect(result.review).not.toContain("\u001b");
+    expect(
+      result.text_prompt_options.find(
+        (entry) => entry.message === "Instance label",
+      )?.options?.initial_value,
+    ).toBeUndefined();
+    expect(setup.creates[0]?.label).toBe("safe-label");
+    expect(result.confirmations).toHaveLength(1);
+  });
+
+  test("changing requirements after an exact plan infers its category and clears the pinned plan", async () => {
+    const setup = await fixture("vultr");
+    setup.setMachines([
+      machine("vultr"),
+      { ...machine("vultr"), id: "shared-large", monthly_cost: 12 },
+    ]);
+    const result = await setup.run(
+      [
+        "--plan",
+        "shared-small",
+        "--region",
+        "test-region",
+        "--image",
+        "101",
+        "--label",
+        "example-instance",
+      ],
+      {
+        selections: {
+          "What next?": ["requirements", "continue"],
+          "Choose a machine": "shared-large",
+        },
+      },
+    );
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toEqual([
+      { available_only: true, id: "shared-small", region_id: "test-region" },
+      { available_only: true, type: "shared_cpu", region_id: "test-region" },
+    ]);
+    expect(result.review).toContain("Machine type: Shared CPU");
+    expect(setup.creates).toHaveLength(1);
+    expect(setup.creates[0]).toMatchObject({
+      plan_id: "shared-large",
+      image_id: "101",
+      label: "example-instance",
+    });
+    expect(result.text_prompts).toEqual([]);
+  });
+
+  test("RunPod storage edits retain hardware and supplied access flags", async () => {
+    const setup = await fixture("runpod");
+    const result = await setup.run(
+      [
+        "--disk-gb",
+        "40",
+        "--volume-gb",
+        "0",
+        "--image",
+        "example/image:latest",
+        "--port",
+        "22/tcp",
+        "--ssh",
+      ],
+      {
+        selections: {
+          "What next?": ["configuration", "continue"],
+          "Edit configuration": ["disk_gb", "volume_gb", "done"],
+        },
+        text: {
+          "Container disk size (GB)": "80",
+          "Persistent volume size (GB)": "20",
+        },
+      },
+    );
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toHaveLength(1);
+    expect(setup.creates[0]).toMatchObject({
+      plan_id: "gpu-example",
+      gpu_count: 1,
+      disk_gb: 80,
+      volume_gb: 20,
+      image_id: "example/image:latest",
+      ports: ["22/tcp"],
+      enable_ssh: true,
+    });
+    expect(result.review).toContain("Persistent volume: 20 GB");
+  });
+
+  test("changing Vast disk requirements refreshes the offer quote and retains configuration", async () => {
+    const setup = await fixture("vast");
+    setup.setMachines([
+      machine("vast"),
+      { ...machine("vast"), id: "654", hourly_cost: 1 },
+    ]);
+    const result = await setup.run([], {
+      selections: {
+        Requirements: ["compare", "disk_gb", "compare"],
+        "Choose a machine": ["321", "654"],
+        "What next?": ["requirements", "continue"],
+      },
+      text: { "Container disk size (GB)": ["40", "80"] },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toEqual([
+      { available_only: true, type: "gpu", disk_gb: 40 },
+      { available_only: true, type: "gpu", disk_gb: 80 },
+    ]);
+    expect(setup.creates).toHaveLength(1);
+    expect(setup.creates[0]).toMatchObject({
+      offer_id: "654",
+      disk_gb: 80,
+      image_id: "example/image:latest",
+      label: "vpsctl-instance",
+    });
+    expect(
+      result.text_prompts.filter((prompt) => prompt === "Docker image"),
+    ).toHaveLength(1);
+  });
+
+  test("catalog region and image choices support search", async () => {
+    const setup = await fixture("vultr");
+    const result = await setup.run();
+
+    expect(result.exit_code).toBe(0);
+    for (const message of ["Choose a region", "Choose an image"]) {
+      expect(
+        result.selections.find((entry) => entry.message === message)
+          ?.prompt_options?.searchable,
+      ).toBe(true);
+    }
+  });
+
+  test("configuration can return to machine comparison before confirmation", async () => {
+    const setup = await fixture("vultr");
+    const result = await setup.run([], {
+      selections: {
+        "What next?": ["configuration", "continue"],
+        "Edit configuration": "machine",
+      },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toHaveLength(1);
+    expect(
+      result.selections.filter((entry) => entry.message === "Choose a machine"),
+    ).toHaveLength(2);
+    expect(setup.creates).toHaveLength(1);
+  });
+
+  for (const prompt of ["Requirements", "What next?"]) {
+    test(`choosing cancel from ${prompt} leaves accounts and resources unchanged`, async () => {
+      const setup = await fixture("vultr");
+      const before = await readFile(setup.config_path, "utf8");
+      const result = await setup.run([], {
+        selections: { [prompt]: "cancel" },
+      });
+
+      expect(result.exit_code).toBe(130);
+      expect(setup.creates).toEqual([]);
+      expect(result.confirmations).toEqual([]);
+      expect(await readFile(setup.config_path, "utf8")).toBe(before);
+    });
+  }
+
+  for (const value of ["-1", "1.5", "9007199254740992"]) {
+    test(`invalid minimum requirements fail before discovery: ${value}`, async () => {
+      const setup = await fixture("vultr");
+      const result = await setup.run([], {
+        selections: { Requirements: "min_vcpu" },
+        text: { "Minimum vCPUs": value },
+      });
+
+      expect(result.exit_code).toBe(1);
+      expect(setup.queries).toEqual([]);
+      expect(setup.creates).toEqual([]);
+      expect(result.confirmations).toEqual([]);
+    });
+  }
+});
+
 describe("guided creation dry runs", () => {
   for (const { provider_id, input, cost } of [
     {
@@ -569,7 +1218,7 @@ describe("guided creation dry runs", () => {
       expect(result.text_prompts).toContain("Instance label");
       expect(result.review).toContain(cost);
       expect(result.review).toContain("Dry run: no instance will be created.");
-      expect(result.note_titles).toEqual(["Dry-run instance creation"]);
+      expect(result.note_titles).toContain("Dry-run instance creation");
       expect(result.stdout).toContain("action: instance.create");
       expect(result.stdout).toContain("dry_run: true");
       const input_line = result.stdout
@@ -599,10 +1248,56 @@ describe("guided creation dry runs", () => {
     expect(setup.creates).toEqual([]);
   });
 
+  test("a dry run can revise requirements and configuration before its final preview", async () => {
+    const setup = await fixture("runpod");
+    const result = await setup.run(["--dry-run"], {
+      selections: {
+        Requirements: ["compare", "gpu_count", "compare"],
+        "What next?": ["requirements", "configuration", "continue"],
+        "Edit configuration": ["image_id", "done"],
+      },
+      text: {
+        "GPU count": ["1", "3"],
+        "Docker image": ["example/image:latest", "example/revised:latest"],
+      },
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(setup.queries).toHaveLength(2);
+    expect(result.review).toContain("$ 2.25/hour");
+    const input_line = result.stdout
+      .split("\n")
+      .find((line) => line.startsWith("input: "));
+    expect(
+      JSON.parse(input_line?.slice("input: ".length) ?? "{}"),
+    ).toMatchObject({
+      plan_id: "gpu-example",
+      gpu_count: 3,
+      image_id: "example/revised:latest",
+    });
+    expect(result.stdout).toContain("dry_run: true");
+    expect(result.confirmations).toEqual([]);
+    expect(setup.creates).toEqual([]);
+  });
+
+  test("cancelling at dry-run review does not print a completed preview", async () => {
+    const setup = await fixture("vultr");
+    const result = await setup.run(["--dry-run"], {
+      selections: { "What next?": "cancel" },
+    });
+
+    expect(result.exit_code).toBe(130);
+    expect(result.stdout).not.toContain("dry_run: true");
+    expect(result.confirmations).toEqual([]);
+    expect(setup.creates).toEqual([]);
+  });
+
   for (const prompt of [
     "Choose an account",
+    "Requirements",
     "Choose a machine",
     "Instance label",
+    "What next?",
   ]) {
     test(`cancelling dry-run ${prompt} leaves accounts and resources unchanged`, async () => {
       const setup = await fixture("vultr", { pick_account: true });

@@ -1,15 +1,31 @@
 import { AppError } from "../core/errors.ts";
+import { filterMachines } from "../core/machines.ts";
 import type {
   CreateGuidance,
   CreateInstanceInput,
   MachineOffer,
   MachineQuery,
-  MachineType,
   Provider,
 } from "../core/provider.ts";
 import type { CliIO, PromptOption } from "./context.ts";
-import { nonnegativeInteger, positiveInteger } from "./input.ts";
-import { formatMoney, sanitizeTerminalText } from "./output.ts";
+import {
+  advertisedCost,
+  choose,
+  machineHardware,
+  readValue,
+  validateInteger,
+  volumeSize,
+  withProgress,
+} from "./create-prompts.ts";
+import {
+  type CreateRequirements,
+  cancelCreation,
+  editRequirements,
+  initialRequirements,
+  machine_type_labels,
+} from "./create-requirements.ts";
+import { positiveInteger } from "./input.ts";
+import { sanitizeTerminalText } from "./output.ts";
 
 export interface CreateReview {
   machine: MachineOffer;
@@ -17,195 +33,251 @@ export interface CreateReview {
   image_name?: string;
 }
 
-const machine_type_labels: Record<MachineType, string> = {
-  shared_cpu: "Shared CPU",
-  dedicated_cpu: "Dedicated CPU",
-  bare_metal: "Bare metal",
-  gpu: "GPU",
-};
-
-function invalidSelection(): never {
-  throw new AppError("invalid_input", "Choose one of the available options.");
+export interface CreateWizardOptions {
+  account_name: string;
+  notice: string;
+  dry_run: boolean;
+  validate_input?(input: CreateInstanceInput): void;
 }
 
-async function choose(
-  io: CliIO,
-  message: string,
-  options: PromptOption[],
-): Promise<string> {
-  if (!io.select) {
-    throw new AppError(
-      "invalid_input",
-      "Guided creation requires interactive selection.",
-    );
-  }
-  const value = await io.select(
-    message,
-    options.map((option) => ({
-      ...option,
-      label: sanitizeTerminalText(option.label),
-      ...(option.hint === undefined
-        ? {}
-        : { hint: sanitizeTerminalText(option.hint) }),
-    })),
-  );
-  if (!options.some((option) => option.value === value)) invalidSelection();
-  return value;
-}
-
-function validateText(value: string): string | undefined {
-  if (!value.trim()) return "A value is required.";
-  if (/\p{C}/u.test(value)) return "Use text without control characters.";
-  return undefined;
-}
-
-async function readValue(
-  io: CliIO,
-  message: string,
-  initial_value?: string,
-  validate: (value: string) => string | undefined = validateText,
-): Promise<string> {
-  if (!io.read_text) {
-    throw new AppError(
-      "invalid_input",
-      "Guided creation requires interactive text input.",
-    );
-  }
-  const value = (
-    await io.read_text(message, {
-      ...(initial_value === undefined ? {} : { initial_value }),
-      validate,
-    })
-  ).trim();
-  const error = validate(value);
-  if (error !== undefined) throw new AppError("invalid_input", error);
-  return value;
-}
-
-function validateInteger(
-  parse: (value: string) => number,
-): (value: string) => string | undefined {
-  return (value) => {
-    try {
-      parse(value.trim());
-      return undefined;
-    } catch (error) {
-      if (error instanceof AppError) return error.message;
-      throw error;
+function costOrder(machine: MachineOffer): { group: string; amount: number } {
+  for (const [period, amount] of [
+    ["month", machine.monthly_cost],
+    ["hour", machine.hourly_cost],
+  ] as const) {
+    if (amount !== undefined && Number.isFinite(amount) && amount >= 0) {
+      return { group: `${machine.currency}:${period}`, amount };
     }
-  };
+  }
+  return { group: "", amount: Number.POSITIVE_INFINITY };
 }
 
-function volumeSize(value: string): number {
-  const size = nonnegativeInteger(value);
-  if (size !== 0 && size < 10) {
+function compareMachines(left: MachineOffer, right: MachineOffer): number {
+  const a = costOrder(left);
+  const b = costOrder(right);
+  if (!a.group && b.group) return 1;
+  if (a.group && !b.group) return -1;
+  return (
+    a.group.localeCompare(b.group) ||
+    a.amount - b.amount ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+async function discoverMachines(
+  input: CreateInstanceInput,
+  requirements: CreateRequirements,
+  guidance: CreateGuidance,
+  io: CliIO,
+  provider: Provider,
+  machine_id?: string,
+): Promise<MachineOffer[]> {
+  const listMachines = provider.listMachines?.bind(provider);
+  if (!listMachines) {
     throw new AppError(
-      "invalid_input",
-      "Persistent storage must be zero or at least 10 GB.",
+      "unsupported_operation",
+      "This provider does not support guided machine discovery. Supply creation flags instead.",
     );
   }
-  return size;
-}
-
-function advertisedCost(machine: MachineOffer): string {
-  const costs: string[] = [];
-  if (
-    machine.monthly_cost !== undefined &&
-    Number.isFinite(machine.monthly_cost) &&
-    machine.monthly_cost >= 0
-  ) {
-    costs.push(`${formatMoney(machine.monthly_cost, machine.currency)}/month`);
-  }
-  if (
-    machine.hourly_cost !== undefined &&
-    Number.isFinite(machine.hourly_cost) &&
-    machine.hourly_cost >= 0
-  ) {
-    costs.push(`${formatMoney(machine.hourly_cost, machine.currency)}/hour`);
-  }
-  return costs.length > 0 ? costs.join("; ") : "Price unavailable";
-}
-
-function machineHardware(machine: MachineOffer): string {
-  const fields: string[] = [];
-  if (machine.gpu_name !== undefined) {
-    fields.push(
-      `${machine.gpu_count === undefined ? "" : `${machine.gpu_count} × `}${machine.gpu_name}`,
+  const query: MachineQuery = {
+    available_only: true,
+    ...(requirements.type === undefined ? {} : { type: requirements.type }),
+    ...(input.region_id === undefined ? {} : { region_id: input.region_id }),
+    ...(machine_id === undefined ? {} : { id: machine_id }),
+    ...(input.gpu_count === undefined ? {} : { gpu_count: input.gpu_count }),
+    ...(guidance.machine_source !== "offer" || input.disk_gb === undefined
+      ? {}
+      : { disk_gb: input.disk_gb }),
+    ...(requirements.min_vcpu ? { min_vcpu: requirements.min_vcpu } : {}),
+    ...(requirements.min_memory_gb
+      ? { min_memory_gb: requirements.min_memory_gb }
+      : {}),
+    ...(requirements.min_gpu_memory_gb
+      ? { min_gpu_memory_gb: requirements.min_gpu_memory_gb }
+      : {}),
+  };
+  const catalog = await withProgress(io, "Finding matching machines", () =>
+    listMachines(query),
+  );
+  const machines = filterMachines(
+    catalog.filter(
+      (machine) =>
+        machine.source === guidance.machine_source &&
+        guidance.machine_types.includes(machine.type),
+    ),
+    query,
+  );
+  if (new Set(machines.map((machine) => machine.id)).size !== machines.length) {
+    throw new AppError(
+      "invalid_response",
+      "The provider returned duplicate machine IDs. Check the catalog before creating an instance.",
     );
-  } else if (machine.gpu_count !== undefined) {
-    fields.push(`${machine.gpu_count} GPU(s)`);
   }
-  if (machine.gpu_memory_gb !== undefined) {
-    fields.push(`${machine.gpu_memory_gb} GB GPU memory`);
-  }
-  if (machine.vcpu_count !== undefined) {
-    fields.push(`${machine.vcpu_count} vCPU(s)`);
-  }
-  if (machine.memory_mb !== undefined) {
-    fields.push(`${machine.memory_mb} MB RAM`);
-  }
-  if (machine.disk_gb !== undefined) {
-    fields.push(`${machine.disk_gb} GB disk`);
-  }
-  return fields.join(", ");
+  return machines.sort(compareMachines);
 }
 
-async function chooseRegion(
+async function chooseMachine(
+  io: CliIO,
+  machines: MachineOffer[],
+): Promise<MachineOffer | undefined> {
+  let back = "__back__";
+  while (machines.some((machine) => machine.id === back)) back += "_";
+  const selected = await choose(
+    io,
+    "Choose a machine",
+    [
+      ...machines.map((machine) => ({
+        value: machine.id,
+        label: `${machine.name ? `${machine.name} (${machine.id})` : machine.id} · ${advertisedCost(machine)}`,
+        hint: machineHardware(machine),
+      })),
+      { value: back, label: "Back to requirements" },
+    ],
+    { searchable: true },
+  );
+  return selected === back
+    ? undefined
+    : machines.find((machine) => machine.id === selected);
+}
+
+async function configureImage(
   input: CreateInstanceInput,
   guidance: CreateGuidance,
   io: CliIO,
   provider: Provider,
-): Promise<void> {
-  if (input.region_id !== undefined || guidance.region === "none") return;
-  const regions = await provider.listRegions();
-  const options: PromptOption[] = regions.map((region) => ({
-    value: region.id,
-    label: region.name || region.id,
-    hint: [region.id, region.country].filter(Boolean).join(" · "),
-  }));
-  if (guidance.region === "optional") {
-    options.unshift({ value: "__any__", label: "Any available region" });
+): Promise<string | undefined> {
+  if (guidance.image === "docker") {
+    io.write_err("Enter a Docker image reference (repository/image:tag).\n");
+    input.image_id = await readValue(io, "Docker image", input.image_id);
+    return undefined;
   }
-  if (options.length === 0) {
+  const images = await withProgress(io, "Loading images", () =>
+    provider.listImages(),
+  );
+  if (images.length === 0) {
     throw new AppError(
       "not_found",
-      "No regions are available. Check the provider catalog and try again.",
+      "No images are available. Check the provider image catalog and try again.",
     );
   }
-  const region_id = await choose(io, "Choose a region", options);
-  if (guidance.region === "optional" && region_id === "__any__") return;
-  input.region_id = region_id;
+  input.image_id = await choose(
+    io,
+    "Choose an image",
+    images.map((image) => ({
+      value: image.id,
+      label: image.name || image.id,
+      hint: [image.id, image.architecture].filter(Boolean).join(" · "),
+    })),
+    {
+      searchable: true,
+      ...(input.image_id === undefined
+        ? {}
+        : { initial_value: input.image_id }),
+    },
+  );
+  return images.find((image) => image.id === input.image_id)?.name;
 }
 
-async function configureGpu(
+async function configureStorage(
+  input: CreateInstanceInput,
+  field: "disk_gb" | "volume_gb",
+  io: CliIO,
+): Promise<void> {
+  const volume = field === "volume_gb";
+  const parse = volume ? volumeSize : positiveInteger;
+  input[field] = parse(
+    await readValue(
+      io,
+      volume ? "Persistent volume size (GB)" : "Container disk size (GB)",
+      String(input[field] ?? (volume ? 0 : 40)),
+      validateInteger(parse),
+    ),
+  );
+}
+
+async function fillConfiguration(
   input: CreateInstanceInput,
   guidance: CreateGuidance,
   io: CliIO,
+  provider: Provider,
+  review: CreateReview,
 ): Promise<void> {
-  if (guidance.gpu_count && input.gpu_count === undefined) {
-    input.gpu_count = positiveInteger(
-      await readValue(io, "GPU count", "1", validateInteger(positiveInteger)),
-    );
+  if (
+    guidance.machine_source === "plan" &&
+    guidance.disk_gb &&
+    input.disk_gb === undefined
+  )
+    await configureStorage(input, "disk_gb", io);
+  if (guidance.volume_gb && input.volume_gb === undefined)
+    await configureStorage(input, "volume_gb", io);
+  if (input.image_id === undefined) {
+    const name = await configureImage(input, guidance, io, provider);
+    if (name !== undefined) review.image_name = name;
   }
-  if (guidance.disk_gb && input.disk_gb === undefined) {
-    input.disk_gb = positiveInteger(
-      await readValue(
-        io,
-        "Container disk size (GB)",
-        "40",
-        validateInteger(positiveInteger),
-      ),
-    );
-  }
-  if (guidance.volume_gb && input.volume_gb === undefined) {
-    input.volume_gb = volumeSize(
-      await readValue(
-        io,
-        "Persistent volume size (GB)",
-        "0",
-        validateInteger(volumeSize),
-      ),
-    );
+  if (input.label === undefined)
+    input.label = await readValue(io, "Instance label", "vpsctl-instance");
+}
+
+async function editConfiguration(
+  input: CreateInstanceInput,
+  guidance: CreateGuidance,
+  io: CliIO,
+  provider: Provider,
+  review: CreateReview,
+): Promise<"review" | "machine"> {
+  for (;;) {
+    const choices: PromptOption[] = [
+      { value: "done", label: "Return to review" },
+      {
+        value: "image_id",
+        label: "Change image",
+        ...(input.image_id === undefined ? {} : { hint: input.image_id }),
+      },
+      {
+        value: "label",
+        label: "Change instance label",
+        ...(input.label === undefined ? {} : { hint: input.label }),
+      },
+      ...(guidance.machine_source === "plan" && guidance.disk_gb
+        ? [
+            {
+              value: "disk_gb",
+              label: "Change container disk size",
+              hint: `${input.disk_gb} GB`,
+            },
+          ]
+        : []),
+      ...(guidance.volume_gb
+        ? [
+            {
+              value: "volume_gb",
+              label: "Change persistent volume size",
+              hint: `${input.volume_gb} GB`,
+            },
+          ]
+        : []),
+      { value: "machine", label: "Back to machines" },
+    ];
+    const action = await choose(io, "Edit configuration", choices);
+    switch (action) {
+      case "done":
+        return "review";
+      case "machine":
+        return "machine";
+      case "image_id": {
+        const name = await configureImage(input, guidance, io, provider);
+        if (name === undefined) delete review.image_name;
+        else review.image_name = name;
+        break;
+      }
+      case "label":
+        input.label = await readValue(io, "Instance label", input.label);
+        break;
+      case "disk_gb":
+      case "volume_gb":
+        await configureStorage(input, action, io);
+        break;
+    }
   }
 }
 
@@ -214,119 +286,129 @@ export async function prepareCreate(
   guidance: CreateGuidance,
   io: CliIO,
   provider: Provider,
+  options: CreateWizardOptions,
 ): Promise<{ input: CreateInstanceInput; review: CreateReview }> {
-  if (!provider.listMachines) {
-    throw new AppError(
-      "unsupported_operation",
-      "This provider does not support guided machine discovery. Supply creation flags instead.",
-    );
-  }
   const input = { ...original };
-  const machine_id =
+  let requested_machine_id =
     guidance.machine_source === "plan" ? input.plan_id : input.offer_id;
-  let type: MachineType | undefined;
-  if (guidance.machine_types.length === 1) {
-    type = guidance.machine_types[0];
-  } else if (machine_id === undefined) {
-    const selected = await choose(
-      io,
-      "Choose a machine type",
-      guidance.machine_types.map((value) => ({
-        value,
-        label: machine_type_labels[value],
-      })),
-    );
-    type = guidance.machine_types.find((value) => value === selected);
-  }
-  await chooseRegion(input, guidance, io, provider);
-  await configureGpu(input, guidance, io);
-  const query: MachineQuery = {
-    available_only: true,
-    ...(type === undefined ? {} : { type }),
-    ...(input.region_id === undefined ? {} : { region_id: input.region_id }),
-    ...(machine_id === undefined ? {} : { id: machine_id }),
-    ...(input.gpu_count === undefined ? {} : { gpu_count: input.gpu_count }),
-    ...(guidance.machine_source !== "offer" || input.disk_gb === undefined
-      ? {}
-      : { disk_gb: input.disk_gb }),
+  const requirements = await initialRequirements(input, guidance, io, provider);
+  let edit_requirements = requested_machine_id === undefined;
+  let machines: MachineOffer[] | undefined;
+  let machine: MachineOffer | undefined;
+  let review: CreateReview | undefined;
+  const resetMachine = (): void => {
+    requested_machine_id = undefined;
+    delete input.plan_id;
+    delete input.offer_id;
+    machine = undefined;
   };
-  const machines = (await provider.listMachines(query)).filter(
-    (machine) =>
-      machine.source === guidance.machine_source &&
-      guidance.machine_types.includes(machine.type) &&
-      (type === undefined || machine.type === type) &&
-      machine.availability === "available" &&
-      (machine_id === undefined || machine.id === machine_id) &&
-      (input.region_id === undefined ||
-        machine.region_ids.includes(input.region_id)) &&
-      (input.gpu_count === undefined || machine.gpu_count === input.gpu_count),
-  );
-  if (machines.length === 0) {
-    throw new AppError(
-      "not_found",
-      machine_id === undefined
-        ? "No available machines match these choices. Try another region, machine type, or GPU count."
-        : "The requested machine is unavailable for these choices. Check spec list machine or choose another region.",
-    );
-  }
-  if (new Set(machines.map((machine) => machine.id)).size !== machines.length) {
-    throw new AppError(
-      "invalid_response",
-      "The provider returned duplicate machine IDs. Check the catalog before creating an instance.",
-    );
-  }
-  const selected_id =
-    machine_id ??
-    (await choose(
+  for (;;) {
+    if (edit_requirements) {
+      await editRequirements(requirements, input, guidance, io, provider);
+      machines = undefined;
+      machine = undefined;
+      edit_requirements = false;
+    }
+    machines ??= await discoverMachines(
+      input,
+      requirements,
+      guidance,
       io,
-      "Choose a machine",
-      machines.map((machine) => ({
-        value: machine.id,
-        label: machine.name ? `${machine.name} (${machine.id})` : machine.id,
-        hint: [machineHardware(machine), advertisedCost(machine)]
-          .filter(Boolean)
-          .join(" · "),
-      })),
-    ));
-  const machine = machines.find((item) => item.id === selected_id);
-  if (machine === undefined) invalidSelection();
-  if (guidance.machine_source === "plan") input.plan_id = machine.id;
-  else input.offer_id = machine.id;
-  let image_name: string | undefined;
-  if (input.image_id === undefined) {
-    if (guidance.image === "catalog") {
-      const images = await provider.listImages();
-      if (images.length === 0) {
+      provider,
+      requested_machine_id,
+    );
+    if (machines.length === 0) {
+      if (requested_machine_id !== undefined) {
         throw new AppError(
           "not_found",
-          "No images are available. Check the provider image catalog and try again.",
+          "The requested machine is unavailable for these choices. Check spec list machine or choose another region.",
         );
       }
-      input.image_id = await choose(
-        io,
-        "Choose an image",
-        images.map((image) => ({
-          value: image.id,
-          label: image.name || image.id,
-          hint: [image.id, image.architecture].filter(Boolean).join(" · "),
-        })),
-      );
-      image_name = images.find((image) => image.id === input.image_id)?.name;
-    } else {
-      input.image_id = await readValue(io, "Docker image");
+      const message =
+        "No available machines match these requirements. Change the region, machine type, sizing, or minimum specifications.";
+      if (io.note) io.note(message, "No matching machines");
+      else io.write_err(`${message}\n`);
+      const action = await choose(io, "No matching machines", [
+        { value: "requirements", label: "Change requirements" },
+        { value: "cancel", label: "Cancel" },
+      ]);
+      if (action === "cancel") cancelCreation();
+      edit_requirements = true;
+      continue;
     }
-  }
-  if (input.label === undefined) {
-    input.label = await readValue(io, "Instance label", "vpsctl-instance");
-  }
-  return {
-    input,
-    review: {
+    machine ??=
+      requested_machine_id === undefined
+        ? await chooseMachine(io, machines)
+        : machines.find((item) => item.id === requested_machine_id);
+    if (machine === undefined) {
+      edit_requirements = true;
+      continue;
+    }
+    requirements.type ??= machine.type;
+    if (guidance.machine_source === "plan") input.plan_id = machine.id;
+    else input.offer_id = machine.id;
+    review = {
       machine,
       cost_notice: guidance.cost_notice,
-      ...(image_name === undefined ? {} : { image_name }),
-    },
-  };
+      ...(review?.image_name === undefined
+        ? {}
+        : { image_name: review.image_name }),
+    };
+    await fillConfiguration(input, guidance, io, provider, review);
+    for (;;) {
+      options.validate_input?.(input);
+      const text = [
+        formatCreateReview(
+          options.account_name,
+          provider.info.id,
+          input,
+          review,
+        ),
+        options.notice,
+        ...(options.dry_run ? ["Dry run: no instance will be created."] : []),
+      ]
+        .filter(Boolean)
+        .join("\n");
+      if (io.note)
+        io.note(
+          text,
+          options.dry_run
+            ? "Dry-run instance creation"
+            : "Review instance creation",
+        );
+      else io.write_err(`${text}\n`);
+      const action = await choose(io, "What next?", [
+        {
+          value: "continue",
+          label: options.dry_run
+            ? "Finish dry run"
+            : "Continue to confirmation",
+        },
+        { value: "requirements", label: "Change requirements" },
+        { value: "machine", label: "Choose another machine" },
+        { value: "configuration", label: "Edit configuration" },
+        { value: "cancel", label: "Cancel" },
+      ]);
+      if (action === "continue") return { input, review };
+      if (action === "cancel") cancelCreation();
+      if (action === "configuration") {
+        if (
+          (await editConfiguration(input, guidance, io, provider, review)) ===
+          "review"
+        )
+          continue;
+      }
+      if (action === "requirements") {
+        resetMachine();
+        machines = undefined;
+        edit_requirements = true;
+      } else {
+        if (requested_machine_id !== undefined) machines = undefined;
+        resetMachine();
+      }
+      break;
+    }
+  }
 }
 
 export function formatCreateReview(

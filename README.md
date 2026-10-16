@@ -123,7 +123,7 @@ Discovery references: [Vultr plan schemas](https://github.com/vultr/govultr/blob
 
 ## Discover and manage instances
 
-Run `instance create` in a terminal to choose an account, machine, and image, then review advertised pricing before the final billable confirmation. The `buy` alias uses the same guided flow.
+Run `instance create` in a terminal to set requirements, compare matching machines, configure the instance, and review advertised pricing before the final billable confirmation. The `buy` alias uses the same guided flow.
 
 ```sh
 bun run dev instance create
@@ -133,11 +133,19 @@ bun run dev -a runpod instance create --gpu-count 2
 bun run dev -a vast instance create --disk-gb 80
 ```
 
-Vultr offers shared CPU, dedicated CPU, and GPU plans with current stock in the selected region, followed by an OS image picker. Bare-metal creation is not supported. RunPod selects Secure Cloud GPU hardware for the requested count, a placement preference, container disk and persistent volume sizes, and a Docker image. Vast.ai searches the current verified, rentable on-demand offers using the requested disk allocation; the default search returns up to 20 offers. Use `spec list offer` for a filtered search, then pass `--offer` to look up and review that exact offer.
+The wizard follows these steps:
 
-Supplied flags are retained. The wizard prompts for missing fields and an instance label, and checks supplied plan/offer IDs against current discovery results. Machine options show hardware and prices; the final review includes the account, machine, image, sizing, supplied settings, advertised cost, and provider billing notes. Missing prices are shown as unavailable. Monthly and hourly costs remain in the units reported by the provider, without estimating monthly GPU charges. RunPod GPU prices exclude storage and other charges; advertised rates are not a price lock and capacity may change before creation.
+1. Select an account when none is already selected; the account determines the provider.
+2. Set requirements: machine type, region, and relevant GPU count or disk allocation. The Requirements menu also supports minimum vCPUs, RAM, and GPU memory; zero clears a minimum. Unknown specifications do not satisfy a minimum.
+3. Compare matching machines in a searchable picker with hardware and advertised prices. Comparable prices are sorted lowest first, with missing prices last. Search matches names, IDs, hardware, and prices. Use Back to requirements to refine the search; empty results also offer another search.
+4. Configure the image, instance label, and relevant storage sizes.
+5. Review the complete request. Change requirements, choose another machine, or edit configuration before continuing to the final billable confirmation. Changing requirements fetches fresh matching machines and replaces the old hardware selection; editing only configuration retains the chosen machine.
 
-Guided creation uses read-only catalog requests before confirmation. With `--dry-run`, the same wizard gathers missing fields and reviews advertised pricing, then prints the assembled request without asking for billable confirmation or creating an instance. Cancelling a prompt exits with code 130; declining final confirmation creates nothing. There is one create request after approval, without automatic retries. Prompts and the cost review go to stderr; stdout contains the result or dry-run preview.
+Vultr offers shared CPU, dedicated CPU, and GPU plans with current stock in the selected region, followed by an OS image picker. Bare-metal creation is not supported. RunPod selects Secure Cloud GPU hardware for the requested count and placement preference, then configures container disk, persistent volume, and Docker image. Vast.ai needs disk allocation before discovery because it affects offer pricing. It searches verified, rentable on-demand offers, applies minimum requirements before limiting the search to 20 results, and accepts a Docker image. Pass `--offer` to look up an exact Vast.ai offer.
+
+Supplied flags seed the wizard and are retained unless explicitly edited. An exact plan/offer skips the initial requirements menu and machine picker, while still checking live availability and pricing. The final review includes the account, machine, image, sizing, supplied settings, advertised cost, and provider billing notes. Missing prices are shown as unavailable. Monthly and hourly costs remain in the units reported by the provider, without estimating monthly GPU charges. RunPod GPU prices exclude storage and other charges; advertised rates are not a price lock and capacity may change before creation.
+
+Guided creation uses read-only catalog requests with loading indicators before confirmation. With `--dry-run`, the same wizard allows requirements and configuration edits, then Finish dry run prints the assembled request without asking for billable confirmation or creating an instance. Cancelling a prompt or choosing Cancel exits with code 130; declining final confirmation creates nothing. There is one create request after approval, without automatic retries. Prompts and the cost review go to stderr; stdout contains the result or dry-run preview.
 
 `--yes`, `--json`, and noninteractive creation skip the wizard and require all provider-specific fields plus an explicit, environment, or default account selection. Dry runs in these modes remain offline and do not load credentials or query catalogs. JSON creation requires `--yes` to create, or `--dry-run` to preview. SSH keys, tags, hostnames, ports, and other optional settings can still be supplied through the existing flags.
 

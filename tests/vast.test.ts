@@ -10,7 +10,10 @@ import {
   validateCreateInput,
   validateEditInput,
 } from "../src/providers/vast/index.ts";
-import { validateCreateDraft } from "../src/providers/vast/schemas.ts";
+import {
+  offerBody,
+  validateCreateDraft,
+} from "../src/providers/vast/schemas.ts";
 
 const api_key = "synthetic-vast-api-key";
 const create_input: CreateInstanceInput = {
@@ -403,6 +406,44 @@ describe("Vast.ai rental machine discovery", () => {
     });
   });
 
+  test("filters minimum requirements remotely and rechecks offers before the limit", async () => {
+    const matching_offer = {
+      cpu_cores_effective: 8,
+      cpu_ram: 32768,
+      gpu_ram: 24000,
+    };
+    const { provider, requests } = harness([
+      json({
+        offers: [
+          offer({ ...matching_offer, id: 120, cpu_cores_effective: 7.99 }),
+          offer({ ...matching_offer, id: 121, cpu_ram: 32767 }),
+          offer({ ...matching_offer, id: 122, gpu_ram: 23999 }),
+          offer({ ...matching_offer, id: 124, cpu_cores_effective: null }),
+          offer({ ...matching_offer, id: 125, cpu_ram: null }),
+          offer({ ...matching_offer, id: 126, gpu_ram: null }),
+          offer({ ...matching_offer, id: 123 }),
+          offer({ ...matching_offer, id: 127, cpu_cores_effective: 16 }),
+        ],
+      }),
+    ]);
+    expect(
+      (
+        await provider.listMachines({
+          min_vcpu: 8,
+          min_memory_gb: 32,
+          min_gpu_memory_gb: 24,
+          limit: 1,
+        })
+      ).map((machine) => machine.id),
+    ).toEqual(["123"]);
+    expect(await requests[0]?.json()).toMatchObject({
+      cpu_cores_effective: { gte: 8 },
+      cpu_ram: { gte: 32768 },
+      gpu_ram: { gte: 24000 },
+      limit: 1,
+    });
+  });
+
   test("looks up an explicit rental offer before limiting results", async () => {
     const { provider, requests } = harness([
       json({
@@ -483,6 +524,11 @@ describe("Vast.ai rental machine discovery", () => {
     { region_id: "" },
     { gpu_count: 1.5 },
     { disk_gb: -1 },
+    { min_vcpu: 0 },
+    { min_memory_gb: 1.5 },
+    { min_gpu_memory_gb: -1 },
+    { min_memory_gb: Math.floor(Number.MAX_SAFE_INTEGER / 1024) + 1 },
+    { min_gpu_memory_gb: Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1 },
     { limit: 101 },
     { available_only: "yes" },
     { unexpected: true },
@@ -496,6 +542,44 @@ describe("Vast.ai rental machine discovery", () => {
 });
 
 describe("Vast.ai on-demand rental", () => {
+  test("validates minimum requirement ranges and safe native-unit conversions", () => {
+    const min_memory_gb = Math.floor(Number.MAX_SAFE_INTEGER / 1024);
+    const min_gpu_memory_gb = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
+    expect(
+      offerBody({
+        min_vcpu: Number.MAX_SAFE_INTEGER,
+        min_memory_gb,
+        min_gpu_memory_gb,
+      }),
+    ).toMatchObject({
+      cpu_cores_effective: { gte: Number.MAX_SAFE_INTEGER },
+      cpu_ram: { gte: min_memory_gb * 1024 },
+      gpu_ram: { gte: min_gpu_memory_gb * 1000 },
+      limit: 20,
+    });
+    for (const field of ["min_vcpu", "min_memory_gb", "min_gpu_memory_gb"]) {
+      for (const value of [
+        0,
+        -1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        Number.MAX_SAFE_INTEGER + 1,
+        "4",
+      ]) {
+        expect(() => offerBody({ [field]: value })).toThrow(
+          expect.objectContaining({ code: "invalid_input" }),
+        );
+      }
+    }
+    expect(() => offerBody({ min_memory_gb: min_memory_gb + 1 })).toThrow(
+      expect.objectContaining({ code: "invalid_input" }),
+    );
+    expect(() =>
+      offerBody({ min_gpu_memory_gb: min_gpu_memory_gb + 1 }),
+    ).toThrow(expect.objectContaining({ code: "invalid_input" }));
+  });
+
   test("searches verified rentable offers with allocation-aware costs", async () => {
     const { provider, requests } = harness([
       json({ offers: [offer({ internal: "private" })] }),

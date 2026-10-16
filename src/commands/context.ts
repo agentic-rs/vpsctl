@@ -14,6 +14,11 @@ export interface PromptOption {
   hint?: string;
 }
 
+export interface PromptSelectOptions {
+  initial_value?: string;
+  searchable?: boolean;
+}
+
 export interface PromptProgress {
   signal?: AbortSignal;
   stop(message: string): void;
@@ -35,7 +40,11 @@ export interface CliIO {
   read_text?(message: string, options?: TextPromptOptions): Promise<string>;
   read_secret?(message: string): Promise<string>;
   read_stdin?(): Promise<string>;
-  select?(message: string, options: PromptOption[]): Promise<string>;
+  select?(
+    message: string,
+    options: PromptOption[],
+    prompt_options?: PromptSelectOptions,
+  ): Promise<string>;
   intro?(message: string): void;
   outro?(message: string): void;
   note?(message: string, title: string): void;

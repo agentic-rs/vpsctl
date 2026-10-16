@@ -226,6 +226,13 @@ export class VastProvider implements Provider {
       ...(value.gpu_name === undefined ? {} : { gpu_name: value.gpu_name }),
       ...(value.gpu_count === undefined ? {} : { gpu_count: value.gpu_count }),
       ...(value.disk_gb === undefined ? {} : { disk_gb: value.disk_gb }),
+      ...(value.min_vcpu === undefined ? {} : { min_vcpu: value.min_vcpu }),
+      ...(value.min_memory_gb === undefined
+        ? {}
+        : { min_memory_gb: value.min_memory_gb }),
+      ...(value.min_gpu_memory_gb === undefined
+        ? {}
+        : { min_gpu_memory_gb: value.min_gpu_memory_gb }),
       ...(value.limit === undefined ? {} : { limit: value.limit }),
     });
     const machines = offers.map(

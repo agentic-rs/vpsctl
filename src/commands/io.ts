@@ -1,4 +1,5 @@
 import {
+  autocomplete,
   type CANCEL_SYMBOL,
   confirm,
   intro,
@@ -65,14 +66,35 @@ export const default_io: CliIO = {
       await confirm({ ...prompt_io, message, initialValue: false }),
     );
   },
-  async select(message, options) {
+  async select(message, options, prompt_options = {}) {
     if (options.length === 0) {
       throw new AppError(
         "invalid_input",
         "No options are available to select.",
       );
     }
-    return promptValue(await select({ ...prompt_io, message, options }));
+    const selection = {
+      ...prompt_io,
+      message,
+      options,
+      maxItems: 7,
+      ...(prompt_options.initial_value === undefined
+        ? {}
+        : { initialValue: prompt_options.initial_value }),
+    };
+    return promptValue(
+      await (prompt_options.searchable
+        ? autocomplete({
+            ...selection,
+            filter: (search, option) => {
+              const query = search.toLocaleLowerCase();
+              return [option.label, option.hint, option.value].some((value) =>
+                value?.toLocaleLowerCase().includes(query),
+              );
+            },
+          })
+        : select(selection)),
+    );
   },
   intro: (message) => intro(message, prompt_io),
   outro: (message) => outro(message, prompt_io),

@@ -129,6 +129,9 @@ export interface OfferQuery {
   gpu_name?: string;
   gpu_count?: number;
   disk_gb?: number;
+  min_vcpu?: number;
+  min_memory_gb?: number;
+  min_gpu_memory_gb?: number;
   limit?: number;
 }
 
@@ -155,6 +158,9 @@ export interface MachineQuery {
   gpu_name?: string;
   gpu_count?: number;
   disk_gb?: number;
+  min_vcpu?: number;
+  min_memory_gb?: number;
+  min_gpu_memory_gb?: number;
   limit?: number;
   available_only?: boolean;
 }
