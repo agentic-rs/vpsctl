@@ -81,6 +81,11 @@ export const plan_schema = z.object({
   locations: z.array(z.string()).optional().default([]),
 });
 
+export const plan_price_schema = z.object({
+  id: z.string().min(1),
+  monthly_cost: z.number().nonnegative().nullish(),
+});
+
 export const image_schema = z.object({
   id: z.number().int().positive(),
   name: z.string(),

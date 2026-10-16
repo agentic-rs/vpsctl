@@ -24,9 +24,9 @@ bun run dev auth list
 # Choose an account interactively if no account or default is selected.
 bun run dev instance list
 bun run dev --account work instance list
-bun run dev --json instance list --all-accounts
+bun run dev --json instance list --all
 bun run dev --account 'vultr:you@example.com' auth get
-bun run dev --json auth get --all-accounts
+bun run dev --json auth get --all
 ```
 
 Commands follow `<scope> <verb> [resource]`. Run a scope without a verb, such as `bun run dev provider`, to see its usage and available subcommands. Usage is written to stdout and exits successfully.
@@ -51,7 +51,7 @@ When `--provider` is omitted, `auth login` uses an existing account's provider o
 
 `auth add NAME` offers the same provider picker for offline registration without verification. An explicit `--provider` or a `provider:email` prefix skips the picker. JSON mode, `--credentials-stdin`, and noninteractive account registration require `--provider` when it cannot be inferred from the ID. Both login and account registration support `--credentials-stdin` and `--credential` environment references.
 
-Account selection follows `--account`, then `VPS_CTL_ACCOUNT`, then the saved default. If none is set, interactive commands offer an account picker for that invocation. Use `auth use ID` to save a default. Adding an account or choosing one in the picker does not set the default. Noninteractive commands and `--json` require an explicit, environment, or saved selection. `--all-accounts` bypasses the picker and cannot be combined with `--account` or `VPS_CTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
+Account selection follows `--account`, then `VPS_CTL_ACCOUNT`, then the saved default. If none is set, interactive commands offer an account picker for that invocation. Use `auth use ID` to save a default. Adding an account or choosing one in the picker does not set the default. Noninteractive commands and `--json` require an explicit, environment, or saved selection. `--all` (also accepted as `--all-accounts`) bypasses the picker and cannot be combined with `--account` or `VPS_CTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
 
 The previous root `login`, `account`, and `catalog` commands have moved to these scopes. Update scripts to use `auth login`, the corresponding `auth` verb (`auth get` replaces account metadata lookup), and `spec list <resource>`. JSON action names follow the same structure: `auth.login`, `auth.list`, `auth.get`, `spec.list.region`, and `credential.list.ssh_key`, for example. Provider and instance action names are unchanged.
 
@@ -59,13 +59,15 @@ Prompts and guided status messages go to stderr, leaving stdout available for co
 
 ## Authentication and account metadata
 
-`auth get` queries live provider metadata for the selected account. `auth get --all-accounts` queries every configured account independently and retains successful results if another account fails. `auth list` remains a local configuration listing without network requests.
+`auth get` queries live provider metadata for the selected account. `auth get --all` queries every configured account independently and retains successful results if another account fails. `auth list` remains a local configuration listing without network requests.
 
 For Vultr, metadata includes name, email, balance, pending charges, last payment date and amount, USD currency, and account permissions (`acls`). Amounts retain the signed values reported by Vultr, without rounding or calculating an available balance. JSON output retains the full normalized record and associates each result with its local account ID. Metadata is fetched on demand and is not saved into the account configuration. Providers that lack this capability report `unsupported_operation`.
 
 RunPod and Vast.ai expose their account email and credit balance. RunPod also reports current hourly spending when available. Fields a provider does not report, such as pending charges or last payment, are omitted. RunPod uses REST v2 for Pods and a read-only GraphQL query for account metadata; its REST API has no equivalent email/balance route. Keys must permit both metadata and inventory access for automatic account IDs.
 
-`instance list --all-accounts` and `auth get --all-accounts` work across providers and retain successful results if another account fails. Inventory exposes only normalized fields, excluding environment variables, passwords, private keys, and other raw provider response data.
+`instance list --all` and `auth get --all` work across providers and retain successful results if another account fails. Inventory exposes only normalized fields, excluding environment variables, passwords, private keys, and other raw provider response data.
+
+Instance listings show `monthly_cost` and its `currency` when available, in both human-readable and JSON output. Vultr listings request the plan catalog once and match each instance to its current advertised monthly plan rate in USD; this is a base rate, excluding add-ons, usage charges, credits, and account-specific discounts. If pricing is unavailable or a plan is no longer listed, inventory still succeeds and the price is omitted. Authentication does not request plan pricing. Hourly GPU prices remain hourly; the CLI does not estimate monthly prices from them.
 
 ## Discover and manage instances
 

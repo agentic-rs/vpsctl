@@ -428,7 +428,7 @@ describe("metadata across accounts", () => {
         error: {
           code: "invalid_input",
           message:
-            "--all-accounts cannot be combined with --account or VPS_CTL_ACCOUNT.",
+            "--all/--all-accounts cannot be combined with --account or VPS_CTL_ACCOUNT.",
         },
       });
     }

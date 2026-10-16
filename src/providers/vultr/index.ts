@@ -6,6 +6,7 @@ import type {
   EditInstanceInput,
   Image,
   Instance,
+  InstanceListOptions,
   Plan,
   Provider,
   ProviderInfo,
@@ -27,6 +28,7 @@ import {
   normalizeRegion,
   normalizeSshKey,
   pagination_schema,
+  plan_price_schema,
   plan_schema,
   region_schema,
   ssh_key_schema,
@@ -86,8 +88,8 @@ export class VultrProvider implements Provider {
     return normalizeAccountMetadata(result.account);
   }
 
-  async listInstances(options?: ProviderRequestOptions): Promise<Instance[]> {
-    return (
+  async listInstances(options?: InstanceListOptions): Promise<Instance[]> {
+    const instances = (
       await this.#list(
         "/instances",
         "instances",
@@ -95,6 +97,40 @@ export class VultrProvider implements Provider {
         options?.signal,
       )
     ).map(normalizeInstance);
+    if (!options?.include_pricing || instances.length === 0) return instances;
+
+    try {
+      const plans = await this.#list(
+        "/plans",
+        "plans",
+        plan_price_schema,
+        options.signal,
+      );
+      const prices = new Map<string, number | undefined>();
+      const ambiguous_ids = new Set<string>();
+      for (const plan of plans) {
+        if (ambiguous_ids.has(plan.id)) continue;
+        const monthly_cost = plan.monthly_cost ?? undefined;
+        if (prices.has(plan.id) && prices.get(plan.id) !== monthly_cost) {
+          prices.delete(plan.id);
+          ambiguous_ids.add(plan.id);
+        } else {
+          prices.set(plan.id, monthly_cost);
+        }
+      }
+      return instances.map((instance) => {
+        const monthly_cost = prices.get(instance.plan_id);
+        return monthly_cost === undefined
+          ? instance
+          : { ...instance, monthly_cost, currency: "USD" };
+      });
+    } catch (error) {
+      if (options.signal?.aborted) {
+        throw new AppError("cancelled", "Operation cancelled.");
+      }
+      if (error instanceof AppError && error.code === "cancelled") throw error;
+      return instances;
+    }
   }
 
   async getInstance(id: string): Promise<Instance> {

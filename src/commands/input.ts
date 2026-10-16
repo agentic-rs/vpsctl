@@ -47,6 +47,9 @@ export function summary(instance: Instance): Record<string, unknown> {
     region_id: instance.region_id,
     plan_id: instance.plan_id,
     public_ipv4: instance.public_ipv4,
+    ...(instance.monthly_cost === undefined
+      ? {}
+      : { monthly_cost: instance.monthly_cost }),
     ...(instance.gpu_name === undefined ? {} : { gpu_name: instance.gpu_name }),
     ...(instance.gpu_count === undefined
       ? {}
@@ -54,6 +57,7 @@ export function summary(instance: Instance): Record<string, unknown> {
     ...(instance.hourly_cost === undefined
       ? {}
       : { hourly_cost: instance.hourly_cost }),
+    ...(instance.currency === undefined ? {} : { currency: instance.currency }),
     ...(instance.ssh_host === undefined ? {} : { ssh_host: instance.ssh_host }),
     ...(instance.ssh_port === undefined ? {} : { ssh_port: instance.ssh_port }),
   };

@@ -37,7 +37,10 @@ export function registerAuthCommands(
     .description(
       "Query identity, balance, pending charges, and payment metadata",
     )
-    .option("--all-accounts", "Query metadata across all configured accounts");
+    .option(
+      "--all, --all-accounts",
+      "Query metadata across all configured accounts",
+    );
   get.action(async () => {
     const flags = get.optsWithGlobals<
       CommonOptions & { all_accounts?: boolean }

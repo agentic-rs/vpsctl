@@ -24,7 +24,9 @@ export interface Instance {
   gpu_name?: string;
   gpu_count?: number;
   gpu_memory_gb?: number;
+  monthly_cost?: number;
   hourly_cost?: number;
+  currency?: string;
   ssh_host?: string;
   ssh_port?: number;
 }
@@ -88,6 +90,10 @@ export interface ProviderRequestOptions {
   signal?: AbortSignal;
 }
 
+export interface InstanceListOptions extends ProviderRequestOptions {
+  include_pricing?: boolean;
+}
+
 export interface CreateInstanceInput {
   region_id?: string;
   plan_id?: string;
@@ -144,7 +150,7 @@ export interface Provider {
   getAccountMetadata?(
     options?: ProviderRequestOptions,
   ): Promise<AccountMetadata>;
-  listInstances(options?: ProviderRequestOptions): Promise<Instance[]>;
+  listInstances(options?: InstanceListOptions): Promise<Instance[]>;
   getInstance(id: string): Promise<Instance>;
   createInstance(input: CreateInstanceInput): Promise<InstanceMutationResult>;
   editInstance(

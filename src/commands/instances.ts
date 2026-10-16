@@ -29,7 +29,7 @@ export function registerInstanceCommands(
     .command("list")
     .description("List instances for one account or all registered accounts")
     .option(
-      "--all-accounts",
+      "--all, --all-accounts",
       "Aggregate inventory across every configured account",
     );
   list.action(async () => {
@@ -38,14 +38,14 @@ export function registerInstanceCommands(
     >();
     if (!flags.all_accounts) {
       await readProvider(list, "instance.list", async (provider) => {
-        const items = await provider.listInstances();
+        const items = await provider.listInstances({ include_pricing: true });
         return flags.json ? items : items.map(summary);
       });
       return;
     }
     const results = (
       await queryAllAccounts(list, context, (provider) =>
-        provider.listInstances(),
+        provider.listInstances({ include_pricing: true }),
       )
     ).map((result) =>
       "data" in result

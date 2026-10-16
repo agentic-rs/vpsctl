@@ -311,6 +311,194 @@ describe("Vultr instances", () => {
   });
 });
 
+describe("Vultr instance pricing", () => {
+  test("joins a paginated plan catalog once for all listed instances", async () => {
+    const { provider, requests } = harness([
+      json({
+        instances: [instance(), instance({ id: "instance-2" })],
+        meta: { links: { next: "next-instances" } },
+      }),
+      json({ instances: [instance({ id: "instance-3", plan: "plan-2" })] }),
+      json({
+        plans: [{ id: "vc2-1c-1gb", monthly_cost: 6.125 }],
+        meta: { links: { next: "next-plans" } },
+      }),
+      json({ plans: [{ id: "plan-2", monthly_cost: 0 }] }),
+    ]);
+
+    const result = await provider.listInstances({ include_pricing: true });
+
+    expect(
+      result.map(({ monthly_cost, currency }) => ({ monthly_cost, currency })),
+    ).toEqual([
+      { monthly_cost: 6.125, currency: "USD" },
+      { monthly_cost: 6.125, currency: "USD" },
+      { monthly_cost: 0, currency: "USD" },
+    ]);
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/v2/instances",
+      "/v2/instances",
+      "/v2/plans",
+      "/v2/plans",
+    ]);
+    expect(requests.every((request) => request.method === "GET")).toBe(true);
+    expect(new URL(requests[3]?.url ?? "").searchParams.get("cursor")).toBe(
+      "next-plans",
+    );
+    expect(JSON.stringify(result)).not.toContain("private-password");
+    expect(JSON.stringify(result)).not.toContain("private-console");
+  });
+
+  test.each([
+    ["unknown plan", []],
+    ["missing price", [{ id: "vc2-1c-1gb" }]],
+    ["null price", [{ id: "vc2-1c-1gb", monthly_cost: null }]],
+  ])("omits unavailable pricing for %s", async (_description, plans) => {
+    const { provider } = harness([
+      json({ instances: [instance()] }),
+      json({ plans }),
+    ]);
+
+    const [result] = await provider.listInstances({ include_pricing: true });
+
+    expect(result).not.toHaveProperty("monthly_cost");
+    expect(result).not.toHaveProperty("currency");
+  });
+
+  test("does not fetch plan pricing unless requested or for empty inventory", async () => {
+    const { provider, requests } = harness([
+      json({ instances: [instance()] }),
+      json({ instances: [instance()] }),
+      json({ instances: [] }),
+      json({ instance: instance() }),
+    ]);
+
+    expect(await provider.listInstances()).toHaveLength(1);
+    expect(
+      await provider.listInstances({ include_pricing: false }),
+    ).toHaveLength(1);
+    expect(await provider.listInstances({ include_pricing: true })).toEqual([]);
+    expect(await provider.getInstance("instance-1")).not.toHaveProperty(
+      "monthly_cost",
+    );
+    expect(requests).toHaveLength(4);
+    expect(requests.every((request) => !request.url.includes("/plans"))).toBe(
+      true,
+    );
+  });
+
+  test("omits conflicting duplicate plan prices and preserves unambiguous prices", async () => {
+    const { provider } = harness([
+      json({
+        instances: [instance(), instance({ id: "instance-2", plan: "plan-2" })],
+      }),
+      json({
+        plans: [
+          { id: "vc2-1c-1gb", monthly_cost: 6 },
+          { id: "vc2-1c-1gb", monthly_cost: 7 },
+          { id: "vc2-1c-1gb", monthly_cost: 6 },
+          { id: "plan-2", monthly_cost: 8 },
+          { id: "plan-2", monthly_cost: 8 },
+        ],
+      }),
+    ]);
+
+    const result = await provider.listInstances({ include_pricing: true });
+
+    expect(result[0]).not.toHaveProperty("monthly_cost");
+    expect(result[0]).not.toHaveProperty("currency");
+    expect(result[1]).toMatchObject({ monthly_cost: 8, currency: "USD" });
+  });
+
+  test.each([
+    ["forbidden catalog", json({ error: `Denied ${api_key}` }, 403)],
+    ["invalid catalog JSON", new Response(`invalid ${api_key}`)],
+    [
+      "negative price",
+      json({ plans: [{ id: "vc2-1c-1gb", monthly_cost: -1 }] }),
+    ],
+    [
+      "non-numeric price",
+      json({ plans: [{ id: "vc2-1c-1gb", monthly_cost: api_key }] }),
+    ],
+    [
+      "infinite price",
+      new Response('{"plans":[{"id":"vc2-1c-1gb","monthly_cost":1e999}]}'),
+    ],
+  ])(
+    "preserves inventory when optional pricing has %s",
+    async (_description, response) => {
+      const { provider } = harness([
+        json({ instances: [instance()] }),
+        response,
+      ]);
+
+      const result = await provider.listInstances({ include_pricing: true });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).not.toHaveProperty("monthly_cost");
+      expect(result[0]).not.toHaveProperty("currency");
+      expect(JSON.stringify(result)).not.toContain(api_key);
+    },
+  );
+
+  test("preserves inventory when the optional pricing request fails", async () => {
+    const requests: Request[] = [];
+    const provider = new VultrProvider({
+      api_key,
+      fetch: async (request) => {
+        requests.push(request);
+        if (requests.length === 1) return json({ instances: [instance()] });
+        throw new Error(`Network failure ${api_key}`);
+      },
+    });
+
+    const result = await provider.listInstances({ include_pricing: true });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).not.toHaveProperty("monthly_cost");
+    expect(requests).toHaveLength(2);
+  });
+
+  test("propagates caller cancellation during optional pricing", async () => {
+    const controller = new AbortController();
+    const pricing_started = Promise.withResolvers<void>();
+    const requests: Request[] = [];
+    const provider = new VultrProvider({
+      api_key,
+      fetch: async (request) => {
+        requests.push(request);
+        if (requests.length === 1) return json({ instances: [instance()] });
+        pricing_started.resolve();
+        return new Promise((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(new Error(`Aborted ${api_key}`)),
+            { once: true },
+          );
+        });
+      },
+    });
+    const result = provider
+      .listInstances({
+        include_pricing: true,
+        signal: controller.signal,
+      })
+      .catch((error: unknown) => error);
+    await pricing_started.promise;
+    controller.abort(api_key);
+
+    const error = await result;
+    expect(error).toMatchObject({
+      code: "cancelled",
+      message: "Operation cancelled.",
+    });
+    expect(String(error)).not.toContain(api_key);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.signal.aborted).toBe(true);
+  });
+});
+
 describe("Vultr pagination and catalogs", () => {
   test("encodes next as an opaque cursor and keeps requests on the fixed API origin", async () => {
     const cursor =

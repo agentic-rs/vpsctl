@@ -18,7 +18,7 @@ export async function queryAllAccounts<T>(
   if (flags.account || env.VPS_CTL_ACCOUNT) {
     throw new AppError(
       "invalid_input",
-      "--all-accounts cannot be combined with --account or VPS_CTL_ACCOUNT.",
+      "--all/--all-accounts cannot be combined with --account or VPS_CTL_ACCOUNT.",
     );
   }
   const config = await storeFor(command).read();

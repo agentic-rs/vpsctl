@@ -226,28 +226,31 @@ describe("guided account selection", () => {
     expect(connections).toEqual([]);
   });
 
-  test("bypasses account selection when querying every account", async () => {
-    const { run, addAccounts, calls } = await fixture();
-    await addAccounts();
-    for (const argv of [
-      ["instance", "list", "--all-accounts"],
-      ["auth", "get", "--all-accounts", "--json"],
-    ]) {
-      const result = await run(argv, {
-        select_error: new AppError("cancelled", "Picker must not open."),
-      });
-      expect(result.exit_code).toBe(0);
-      expect(result.selections).toEqual([]);
-      expect(result.stdout).toContain(work_id);
-      expect(result.stdout).toContain("personal");
-    }
-    expect(calls).toEqual([
-      { action: "list", api_key: work_key },
-      { action: "list", api_key: personal_key },
-      { action: "metadata", api_key: work_key },
-      { action: "metadata", api_key: personal_key },
-    ]);
-  });
+  test.each(["--all", "--all-accounts"])(
+    "bypasses account selection when querying every account with %s",
+    async (flag) => {
+      const { run, addAccounts, calls } = await fixture();
+      await addAccounts();
+      for (const argv of [
+        ["instance", "list", flag],
+        ["auth", "get", flag, "--json"],
+      ]) {
+        const result = await run(argv, {
+          select_error: new AppError("cancelled", "Picker must not open."),
+        });
+        expect(result.exit_code).toBe(0);
+        expect(result.selections).toEqual([]);
+        expect(result.stdout).toContain(work_id);
+        expect(result.stdout).toContain("personal");
+      }
+      expect(calls).toEqual([
+        { action: "list", api_key: work_key },
+        { action: "list", api_key: personal_key },
+        { action: "metadata", api_key: work_key },
+        { action: "metadata", api_key: personal_key },
+      ]);
+    },
+  );
 
   test("cancelled selection leaves configuration untouched and makes no provider connection", async () => {
     const { run, addAccounts, config_path, connections } = await fixture();

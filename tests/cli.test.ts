@@ -70,6 +70,7 @@ async function fixture() {
   const calls: ProviderCall[] = [];
   const connections: Readonly<Record<string, string>>[] = [];
   const failing_keys = new Set<string>();
+  const inventory_by_key = new Map<string, Instance[]>();
   const info = {
     id: "vultr",
     name: "Test provider",
@@ -96,7 +97,7 @@ async function fixture() {
               "Provider temporarily unavailable.",
             );
           }
-          return [instance(instance_id)];
+          return inventory_by_key.get(api_key) ?? [instance(instance_id)];
         },
         async getInstance(id) {
           record({ action: "get", instance_id: id });
@@ -210,6 +211,7 @@ async function fixture() {
     calls,
     connections,
     failing_keys,
+    inventory_by_key,
     run,
     addAccounts,
   };
@@ -424,47 +426,185 @@ describe("local accounts and account routing", () => {
     expect(calls.map(({ action }) => action)).toEqual(["list", "list", "list"]);
   });
 
-  test("aggregates accounts and reports partial failure with exit code 1", async () => {
-    const { run, addAccounts, calls, failing_keys } = await fixture();
+  test.each(["--all", "--all-accounts"])(
+    "%s aggregates accounts and reports partial failure with exit code 1",
+    async (flag) => {
+      const { run, addAccounts, calls, failing_keys } = await fixture();
+      await addAccounts();
+      failing_keys.add(credentials.VULTR_PERSONAL_TOKEN);
+      const result = await run(["instance", "list", flag, "--json"]);
+      expect(result.exit_code).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toEqual({
+        action: "instance.list",
+        data: [
+          {
+            account_id: "work",
+            provider_id: "vultr",
+            instances: [instance("work-vm")],
+          },
+          {
+            account_id: "personal",
+            provider_id: "vultr",
+            error: "Provider temporarily unavailable.",
+          },
+        ],
+      });
+      expect(calls).toEqual([
+        { action: "list", api_key: credentials.VULTR_WORK_TOKEN },
+        { action: "list", api_key: credentials.VULTR_PERSONAL_TOKEN },
+      ]);
+    },
+  );
+
+  test.each(["--all", "--all-accounts"])(
+    "rejects %s combined with either account selector",
+    async (flag) => {
+      const { run, addAccounts, connections } = await fixture();
+      await addAccounts();
+      for (const result of [
+        await run(["instance", "list", flag, "--account", "work"]),
+        await run(["instance", "list", flag], {
+          env: { ...credentials, VPS_CTL_ACCOUNT: "work" },
+        }),
+      ]) {
+        expect(result.exit_code).toBe(1);
+        expect(result.stderr).toContain(
+          "cannot be combined with --account or VPS_CTL_ACCOUNT",
+        );
+      }
+      expect(connections).toEqual([]);
+    },
+  );
+
+  test("--all and --all-accounts produce the same inventory in human and JSON output", async () => {
+    const { run, addAccounts } = await fixture();
     await addAccounts();
-    failing_keys.add(credentials.VULTR_PERSONAL_TOKEN);
-    const result = await run(["instance", "list", "--all-accounts", "--json"]);
-    expect(result.exit_code).toBe(1);
-    expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout)).toEqual({
-      action: "instance.list",
-      data: [
-        {
-          account_id: "work",
-          provider_id: "vultr",
-          instances: [instance("work-vm")],
-        },
-        {
-          account_id: "personal",
-          provider_id: "vultr",
-          error: "Provider temporarily unavailable.",
-        },
-      ],
-    });
-    expect(calls).toEqual([
-      { action: "list", api_key: credentials.VULTR_WORK_TOKEN },
-      { action: "list", api_key: credentials.VULTR_PERSONAL_TOKEN },
-    ]);
+    for (const format of [[], ["--json"]]) {
+      const current = await run(["instance", "list", "--all", ...format]);
+      const legacy = await run([
+        "instance",
+        "list",
+        "--all-accounts",
+        ...format,
+      ]);
+      expect(current.exit_code).toBe(0);
+      expect(current.stdout).toBe(legacy.stdout);
+      expect(current.stderr).toBe("");
+      expect(legacy.exit_code).toBe(0);
+      expect(legacy.stderr).toBe("");
+      expect(current.stdout).toContain("work-vm");
+      expect(current.stdout).toContain("personal-vm");
+    }
   });
 
-  test("rejects all-accounts combined with either account selector", async () => {
-    const { run, addAccounts, connections } = await fixture();
+  test.each(["--all", "--all-accounts"])(
+    "%s handles an empty account store without connecting",
+    async (flag) => {
+      const { run, connections } = await fixture();
+      const human = await run(["instance", "list", flag]);
+      expect(human.exit_code).toBe(0);
+      expect(human.stdout).toContain("No accounts configured.");
+      expect(human.stderr).toBe("");
+      const json = await run(["instance", "list", flag, "--json"]);
+      expect(json.exit_code).toBe(0);
+      expect(JSON.parse(json.stdout)).toEqual({
+        action: "instance.list",
+        data: [],
+      });
+      expect(json.stderr).toBe("");
+      expect(connections).toEqual([]);
+    },
+  );
+});
+
+describe("instance listing costs", () => {
+  test("shows provided monthly prices, including zero and prices first present on a later row", async () => {
+    const { run, addAccounts, inventory_by_key } = await fixture();
     await addAccounts();
-    for (const result of [
-      await run(["instance", "list", "--all-accounts", "--account", "work"]),
-      await run(["instance", "list", "--all-accounts"], {
-        env: { ...credentials, VPS_CTL_ACCOUNT: "work" },
-      }),
-    ]) {
-      expect(result.exit_code).toBe(1);
-      expect(result.stderr).toContain("--all-accounts cannot be combined");
+    inventory_by_key.set(credentials.VULTR_WORK_TOKEN, [
+      instance("unknown-price"),
+      { ...instance("priced-vm"), monthly_cost: 12.5, currency: "USD" },
+      { ...instance("free-vm"), monthly_cost: 0, currency: "USD" },
+    ]);
+    const human = await run(["instance", "list"]);
+    expect(human.exit_code).toBe(0);
+    const lines = human.stdout.split("\n");
+    const heading = lines.find((line) => line.includes("monthly_cost"));
+    expect(heading).toContain("currency");
+    const priced_row = lines.find((line) => line.startsWith("priced-vm"));
+    expect(priced_row).toContain("12.5");
+    expect(priced_row).toContain("USD");
+    const free_row = lines.find((line) => line.startsWith("free-vm"));
+    expect(free_row).toMatch(/\s0\s/);
+    expect(free_row).toContain("USD");
+    expect(
+      lines.find((line) => line.startsWith("unknown-price")),
+    ).not.toContain("USD");
+    expect(human.stderr).toBe("");
+
+    const json = await run(["instance", "list", "--json"]);
+    expect(json.exit_code).toBe(0);
+    const rows = JSON.parse(json.stdout).data;
+    expect(rows[0]).not.toHaveProperty("monthly_cost");
+    expect(rows[0]).not.toHaveProperty("currency");
+    expect(rows[1]).toMatchObject({
+      id: "priced-vm",
+      monthly_cost: 12.5,
+      currency: "USD",
+    });
+    expect(rows[2]).toMatchObject({
+      id: "free-vm",
+      monthly_cost: 0,
+      currency: "USD",
+    });
+    expect(json.stderr).toBe("");
+  });
+
+  test("preserves per-instance costs when aggregating accounts", async () => {
+    const { run, addAccounts, inventory_by_key } = await fixture();
+    await addAccounts();
+    inventory_by_key.set(credentials.VULTR_WORK_TOKEN, [
+      { ...instance("priced-vm"), monthly_cost: 7.25, currency: "USD" },
+    ]);
+    inventory_by_key.set(credentials.VULTR_PERSONAL_TOKEN, [
+      instance("unknown-price"),
+    ]);
+    const human = await run(["instance", "list", "--all"]);
+    expect(human.exit_code).toBe(0);
+    expect(human.stdout).toContain("monthly_cost");
+    expect(human.stdout).toContain("7.25");
+    expect(human.stdout).toContain("USD");
+    expect(human.stderr).toBe("");
+
+    const json = await run(["instance", "list", "--all", "--json"]);
+    expect(json.exit_code).toBe(0);
+    const accounts = JSON.parse(json.stdout).data;
+    expect(accounts[0]).toMatchObject({
+      account_id: "work",
+      instances: [{ monthly_cost: 7.25, currency: "USD" }],
+    });
+    expect(accounts[1].instances[0]).not.toHaveProperty("monthly_cost");
+    expect(accounts[1].instances[0]).not.toHaveProperty("currency");
+    expect(json.stderr).toBe("");
+  });
+
+  test("does not invent a monthly price from hourly pricing", async () => {
+    const { run, addAccounts, inventory_by_key } = await fixture();
+    await addAccounts();
+    inventory_by_key.set(credentials.VULTR_WORK_TOKEN, [
+      { ...instance("hourly-vm"), hourly_cost: 0.5, currency: "USD" },
+    ]);
+    for (const selector of [[], ["--all"]]) {
+      const human = await run(["instance", "list", ...selector]);
+      expect(human.exit_code).toBe(0);
+      expect(human.stdout).toContain("hourly_cost");
+      expect(human.stdout).not.toContain("monthly_cost");
+      const json = await run(["instance", "list", ...selector, "--json"]);
+      expect(json.exit_code).toBe(0);
+      expect(json.stdout).toContain('"hourly_cost": 0.5');
+      expect(json.stdout).not.toContain("monthly_cost");
     }
-    expect(connections).toEqual([]);
   });
 });
 
