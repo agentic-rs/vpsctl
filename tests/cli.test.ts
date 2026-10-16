@@ -519,47 +519,61 @@ describe("local accounts and account routing", () => {
 });
 
 describe("instance listing costs", () => {
-  test("shows provided monthly prices, including zero and prices first present on a later row", async () => {
-    const { run, addAccounts, inventory_by_key } = await fixture();
-    await addAccounts();
-    inventory_by_key.set(credentials.VULTR_WORK_TOKEN, [
-      instance("unknown-price"),
-      { ...instance("priced-vm"), monthly_cost: 12.5, currency: "USD" },
-      { ...instance("free-vm"), monthly_cost: 0, currency: "USD" },
-    ]);
-    const human = await run(["instance", "list"]);
-    expect(human.exit_code).toBe(0);
-    const lines = human.stdout.split("\n");
-    const heading = lines.find((line) => line.includes("monthly_cost"));
-    expect(heading).toContain("currency");
-    const priced_row = lines.find((line) => line.startsWith("priced-vm"));
-    expect(priced_row).toContain("12.5");
-    expect(priced_row).toContain("USD");
-    const free_row = lines.find((line) => line.startsWith("free-vm"));
-    expect(free_row).toMatch(/\s0\s/);
-    expect(free_row).toContain("USD");
-    expect(
-      lines.find((line) => line.startsWith("unknown-price")),
-    ).not.toContain("USD");
-    expect(human.stderr).toBe("");
+  test.each(["selected", "all"])(
+    "formats monthly prices with their currencies for %s accounts",
+    async (selection) => {
+      const { run, addAccounts, inventory_by_key } = await fixture();
+      await addAccounts();
+      const prices = [
+        { id: "usd-vm", monthly_cost: 6, currency: "USD", display: "$ 6" },
+        { id: "cny-vm", monthly_cost: 6, currency: "CNY", display: "¥ 6" },
+        { id: "eur-vm", monthly_cost: 6, currency: "EUR", display: "6 EUR" },
+        { id: "unclassified-vm", monthly_cost: 6, display: "6" },
+        { id: "free-vm", monthly_cost: 0, currency: "USD", display: "$ 0" },
+        {
+          id: "fractional-vm",
+          monthly_cost: 12.5,
+          currency: "USD",
+          display: "$ 12.5",
+        },
+      ];
+      const instances = prices.map(({ id, display: _, ...price }) => ({
+        ...instance(id),
+        ...price,
+      }));
+      inventory_by_key.set(credentials.VULTR_WORK_TOKEN, [
+        instance("unknown-price"),
+        ...instances,
+      ]);
+      const selector = selection === "all" ? ["--all"] : [];
+      const human = await run(["instance", "list", ...selector]);
+      expect(human.exit_code).toBe(0);
+      const lines = human.stdout.split("\n");
+      const heading = lines.find((line) => line.includes("monthly_cost"));
+      expect(heading).toBeDefined();
+      expect(heading).not.toContain("currency");
+      for (const price of prices) {
+        const row = lines.find((line) =>
+          line.split(/\s{2,}/).includes(price.id),
+        );
+        expect(row?.split(/\s{2,}/).at(-1)).toBe(price.display);
+      }
+      const unknown_row = lines.find((line) => line.includes("unknown-price"));
+      expect(unknown_row).not.toContain("$");
+      expect(unknown_row).not.toContain("¥");
+      expect(unknown_row).not.toContain("USD");
+      expect(human.stderr).toBe("");
 
-    const json = await run(["instance", "list", "--json"]);
-    expect(json.exit_code).toBe(0);
-    const rows = JSON.parse(json.stdout).data;
-    expect(rows[0]).not.toHaveProperty("monthly_cost");
-    expect(rows[0]).not.toHaveProperty("currency");
-    expect(rows[1]).toMatchObject({
-      id: "priced-vm",
-      monthly_cost: 12.5,
-      currency: "USD",
-    });
-    expect(rows[2]).toMatchObject({
-      id: "free-vm",
-      monthly_cost: 0,
-      currency: "USD",
-    });
-    expect(json.stderr).toBe("");
-  });
+      const json = await run(["instance", "list", ...selector, "--json"]);
+      expect(json.exit_code).toBe(0);
+      const data = JSON.parse(json.stdout).data;
+      const rows = selection === "all" ? data[0].instances : data;
+      expect(rows[0]).not.toHaveProperty("monthly_cost");
+      expect(rows[0]).not.toHaveProperty("currency");
+      expect(rows.slice(1)).toEqual(instances);
+      expect(json.stderr).toBe("");
+    },
+  );
 
   test("preserves per-instance costs when aggregating accounts", async () => {
     const { run, addAccounts, inventory_by_key } = await fixture();
@@ -573,8 +587,8 @@ describe("instance listing costs", () => {
     const human = await run(["instance", "list", "--all"]);
     expect(human.exit_code).toBe(0);
     expect(human.stdout).toContain("monthly_cost");
-    expect(human.stdout).toContain("7.25");
-    expect(human.stdout).toContain("USD");
+    expect(human.stdout).toContain("$ 7.25");
+    expect(human.stdout).not.toContain("currency");
     expect(human.stderr).toBe("");
 
     const json = await run(["instance", "list", "--all", "--json"]);
@@ -600,9 +614,12 @@ describe("instance listing costs", () => {
       expect(human.exit_code).toBe(0);
       expect(human.stdout).toContain("hourly_cost");
       expect(human.stdout).not.toContain("monthly_cost");
+      expect(human.stdout).toContain("$ 0.5");
+      expect(human.stdout).not.toContain("currency");
       const json = await run(["instance", "list", ...selector, "--json"]);
       expect(json.exit_code).toBe(0);
       expect(json.stdout).toContain('"hourly_cost": 0.5');
+      expect(json.stdout).toContain('"currency": "USD"');
       expect(json.stdout).not.toContain("monthly_cost");
     }
   });

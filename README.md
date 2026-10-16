@@ -67,7 +67,7 @@ RunPod and Vast.ai expose their account email and credit balance. RunPod also re
 
 `instance list --all` and `auth get --all` work across providers and retain successful results if another account fails. Inventory exposes only normalized fields, excluding environment variables, passwords, private keys, and other raw provider response data.
 
-Instance listings show `monthly_cost` and its `currency` when available, in both human-readable and JSON output. Vultr listings request the plan catalog once and match each instance to its current advertised monthly plan rate in USD; this is a base rate, excluding add-ons, usage charges, credits, and account-specific discounts. If pricing is unavailable or a plan is no longer listed, inventory still succeeds and the price is omitted. Authentication does not request plan pricing. Hourly GPU prices remain hourly; the CLI does not estimate monthly prices from them.
+Instance listings show prices with their currency in each cost cell: `$ 6` for USD, `¥ 6` for CNY, and `6 EUR` for other currency codes. Human-readable tables have no separate currency column. JSON retains numeric `monthly_cost`/`hourly_cost` values and the `currency` field. Vultr listings request the plan catalog once and match each instance to its current advertised monthly plan rate in USD; this is a base rate, excluding add-ons, usage charges, credits, and account-specific discounts. If pricing is unavailable or a plan is no longer listed, inventory still succeeds and the price is omitted. Authentication does not request plan pricing. Hourly GPU prices remain hourly; the CLI does not estimate monthly prices from them.
 
 ## Discover and manage instances
 

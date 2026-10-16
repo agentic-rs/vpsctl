@@ -25,3 +25,18 @@ test("optional table values still strip terminal controls", () => {
   expect(output).toContain("safe [2J");
   expect(output).not.toContain("\u001b");
 });
+
+test("provider price tables embed currency without changing their numeric input", () => {
+  const rows = [
+    { id: "example-plan", monthly_cost: 6, currency: "USD" },
+    { id: "example-offer", hourly_cost: 0.125, currency: "CNY" },
+    { id: "another-plan", monthly_cost: 9.5, currency: "EUR" },
+  ];
+  const before = JSON.stringify(rows);
+  const output = render(rows);
+  expect(output.split("\n")[0]).not.toContain("currency");
+  expect(output).toContain("$ 6");
+  expect(output).toContain("¥ 0.125");
+  expect(output).toContain("9.5 EUR");
+  expect(JSON.stringify(rows)).toBe(before);
+});
