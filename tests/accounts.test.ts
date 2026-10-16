@@ -13,8 +13,10 @@ import { join } from "node:path";
 import {
   type Account,
   AccountStore,
+  accountDisplayId,
   defaultConfigPath,
   deriveAccountId,
+  findAccount,
   resolveAccount,
   resolveCredentialReferences,
   resolveCredentials,
@@ -134,6 +136,95 @@ describe("account IDs", () => {
         "A valid account email is required",
       );
     }
+  });
+});
+
+describe("account shortcuts", () => {
+  test("resolves and displays a unique provider account regardless of its canonical ID", () => {
+    const accounts = [
+      account("vultr:user@example.com"),
+      { ...account("gpu-work"), provider_id: "vast" },
+      { ...account("runpod:user@example.com"), provider_id: "runpod" },
+    ];
+    for (const entry of accounts) {
+      const config = { version: 1 as const, accounts };
+      expect(findAccount(accounts, entry.provider_id)).toBe(entry);
+      expect(resolveAccount(config, entry.provider_id)).toEqual(entry);
+      expect(resolveAccount(config, entry.id)).toEqual(entry);
+      expect(accountDisplayId(entry, accounts)).toBe(entry.provider_id);
+    }
+  });
+
+  test("rejects ambiguous shortcuts but preserves full IDs and aliases", () => {
+    const accounts = [account("vultr:user@example.com"), account("work")];
+    const config = { version: 1 as const, accounts };
+    expect(() => findAccount(accounts, "vultr")).toThrow(
+      "Account shortcut is ambiguous. Use a full account ID from auth list.",
+    );
+    expect(() => resolveAccount(config, "vultr")).toThrow(AppError);
+    for (const entry of accounts) {
+      expect(resolveAccount(config, entry.id)).toEqual(entry);
+      expect(accountDisplayId(entry, accounts)).toBe(entry.id);
+    }
+    try {
+      findAccount(accounts, "vultr");
+      throw new Error("Expected ambiguous account selection to fail.");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "invalid_input" });
+      expect(String(error)).not.toContain("VULTR_WORK_TOKEN");
+    }
+  });
+
+  test("gives exact IDs precedence when they collide with another provider shortcut", () => {
+    const explicit_alias = account("vast");
+    const provider_account = {
+      ...account("vast:user@example.com"),
+      provider_id: "vast",
+    };
+    const accounts = [explicit_alias, provider_account];
+    expect(findAccount(accounts, "vast")).toBe(explicit_alias);
+    expect(resolveAccount({ version: 1, accounts }, "vast")).toEqual(
+      explicit_alias,
+    );
+    expect(accountDisplayId(explicit_alias, accounts)).toBe("vultr");
+    expect(accountDisplayId(provider_account, accounts)).toBe(
+      provider_account.id,
+    );
+  });
+
+  test("preserves exact IDs even when multiple accounts share that provider", () => {
+    const exact = account("vultr");
+    const second = account("vultr:user@example.com");
+    const accounts = [second, exact];
+    expect(findAccount(accounts, "vultr")).toBe(exact);
+    expect(accountDisplayId(exact, accounts)).toBe("vultr");
+    expect(accountDisplayId(second, accounts)).toBe(second.id);
+  });
+
+  test("does not infer a missing selector or use a provider shortcut as a saved default", () => {
+    const accounts = [account("vultr:user@example.com")];
+    expect(findAccount(accounts, "missing")).toBeUndefined();
+    expect(() => resolveAccount({ version: 1, accounts }, "missing")).toThrow(
+      "Account not found.",
+    );
+    expect(() => resolveAccount({ version: 1, accounts })).toThrow(
+      "Select an account",
+    );
+    expect(() =>
+      resolveAccount({ version: 1, accounts, default_account_id: "vultr" }),
+    ).toThrow("Invalid account configuration file.");
+  });
+
+  test("display shortcuts require no credentials and leave the source identities unchanged", () => {
+    const identity = Object.freeze({
+      id: "vultr:user@example.com",
+      provider_id: "vultr",
+    });
+    const identities = Object.freeze([identity]);
+    expect(accountDisplayId(identity, identities)).toBe("vultr");
+    expect(identities).toEqual([
+      { id: "vultr:user@example.com", provider_id: "vultr" },
+    ]);
   });
 });
 
@@ -285,6 +376,69 @@ describe("AccountStore", () => {
     expect(config).toEqual({ version: 1, accounts: [account("personal")] });
     expect(await store.read()).toEqual(config);
     expect(() => resolveAccount(config)).toThrow("Select an account");
+  });
+
+  test("selects and removes unique provider shortcuts while persisting canonical IDs", async () => {
+    const { store } = await fixture();
+    const entry = account("vultr:user@example.com");
+    const other = { ...account("gpu-work"), provider_id: "vast" };
+    await store.add(entry);
+    await store.add(other);
+    expect(await store.use("vultr")).toEqual({
+      version: 1,
+      default_account_id: entry.id,
+      accounts: [entry, other],
+    });
+    expect(await store.remove("vast")).toEqual({
+      version: 1,
+      default_account_id: entry.id,
+      accounts: [entry],
+    });
+    expect(await store.remove("vultr")).toEqual({ version: 1, accounts: [] });
+    expect(await store.read()).toEqual({ version: 1, accounts: [] });
+  });
+
+  test("updates shortcut ambiguity as accounts change without changing a saved default", async () => {
+    const { store, config_path } = await fixture();
+    const first = account("vultr:first@example.com");
+    const second = account("vultr:second@example.com");
+    await store.add(first);
+    await store.use("vultr");
+    await store.add(second);
+    const original = await readFile(config_path, "utf8");
+    expect(resolveAccount(await store.read())).toEqual(first);
+    expect(() =>
+      resolveAccount({ version: 1, accounts: [first, second] }, "vultr"),
+    ).toThrow("ambiguous");
+    await expect(store.use("vultr")).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    await expect(store.remove("vultr")).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    expect(await readFile(config_path, "utf8")).toBe(original);
+    await store.remove(second.id);
+    expect(resolveAccount(await store.read(), "vultr")).toEqual(first);
+    expect((await store.use("vultr")).default_account_id).toBe(first.id);
+  });
+
+  test("store mutations honor exact IDs instead of colliding provider shortcuts", async () => {
+    const { store } = await fixture();
+    const exact = account("vast");
+    const provider_account = {
+      ...account("vast:user@example.com"),
+      provider_id: "vast",
+    };
+    await store.add(exact);
+    await store.add(provider_account);
+    expect((await store.use("vast")).default_account_id).toBe(exact.id);
+    expect(await store.remove("vast")).toEqual({
+      version: 1,
+      accounts: [provider_account],
+    });
+    expect((await store.use("vast")).default_account_id).toBe(
+      provider_account.id,
+    );
   });
 
   test("rejects invalid account input and unsupported credential objects", async () => {

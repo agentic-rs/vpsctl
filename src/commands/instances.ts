@@ -52,15 +52,20 @@ export function registerInstanceCommands(
         ? {
             account_id: result.account_id,
             provider_id: result.provider_id,
+            display_id: result.display_id,
             instances: result.data,
           }
         : { ...result, instances: undefined },
     );
     if (flags.json) {
-      print(list, "instance.list", results);
+      print(
+        list,
+        "instance.list",
+        results.map(({ display_id: _, ...result }) => result),
+      );
     } else {
       for (const result of results) {
-        io.write_out(`Account: ${result.account_id} (${result.provider_id})\n`);
+        io.write_out(`Account: ${result.display_id} (${result.provider_id})\n`);
         io.write_out(
           `${result.instances ? render(result.instances.map(summary), { columns: io.output_columns }) : `Error: ${result.error}`}\n`,
         );

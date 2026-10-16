@@ -78,6 +78,45 @@ const config_schema = z
 export type CredentialReference = z.infer<typeof credential_schema>;
 export type Account = z.infer<typeof account_schema>;
 export type AccountConfig = z.infer<typeof config_schema>;
+export type AccountIdentity = Pick<Account, "id" | "provider_id">;
+
+/** Use a provider shortcut only when it resolves back to this account. */
+export function accountDisplayId(
+  account: AccountIdentity,
+  accounts: readonly AccountIdentity[],
+): string {
+  const provider_accounts = accounts.filter(
+    (candidate) => candidate.provider_id === account.provider_id,
+  );
+  const collision = accounts.some(
+    (candidate) =>
+      candidate.id === account.provider_id && candidate.id !== account.id,
+  );
+  return provider_accounts.length === 1 &&
+    provider_accounts[0]?.id === account.id &&
+    !collision
+    ? account.provider_id
+    : account.id;
+}
+
+/** Exact IDs always take precedence over inferred provider shortcuts. */
+export function findAccount(
+  accounts: readonly Account[],
+  selector: string,
+): Account | undefined {
+  const exact = accounts.find((account) => account.id === selector);
+  if (exact) return exact;
+  const candidates = accounts.filter(
+    (account) => account.provider_id === selector,
+  );
+  if (candidates.length > 1) {
+    throw new AppError(
+      "invalid_input",
+      "Account shortcut is ambiguous. Use a full account ID from auth list.",
+    );
+  }
+  return candidates[0];
+}
 
 export function validateAccountId(id: string): string {
   if (!account_identifier.safeParse(id).success) {
@@ -154,9 +193,7 @@ export function resolveAccount(
       "Select an account with --account or set a default with auth use.",
     );
   }
-  const account = validated_config.accounts.find(
-    (candidate) => candidate.id === account_id,
-  );
+  const account = findAccount(validated_config.accounts, account_id);
   if (!account) {
     throw new AppError("not_found", "Account not found.");
   }
@@ -259,24 +296,22 @@ export class AccountStore {
 
   async remove(id: string): Promise<AccountConfig> {
     return this.update((config) => {
-      if (!config.accounts.some((account) => account.id === id)) {
-        throw new AppError("not_found", "Account not found.");
-      }
+      const account = resolveAccount(config, id);
       const updated: AccountConfig = {
         ...config,
-        accounts: config.accounts.filter((account) => account.id !== id),
+        accounts: config.accounts.filter((entry) => entry.id !== account.id),
       };
-      if (updated.default_account_id === id) delete updated.default_account_id;
+      if (updated.default_account_id === account.id) {
+        delete updated.default_account_id;
+      }
       return updated;
     });
   }
 
   async use(id: string): Promise<AccountConfig> {
     return this.update((config) => {
-      if (!config.accounts.some((account) => account.id === id)) {
-        throw new AppError("not_found", "Account not found.");
-      }
-      return { ...config, default_account_id: id };
+      const account = resolveAccount(config, id);
+      return { ...config, default_account_id: account.id };
     });
   }
 

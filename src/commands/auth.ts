@@ -1,4 +1,9 @@
-import { type Account, validateAccountId } from "../core/accounts.ts";
+import {
+  type Account,
+  accountDisplayId,
+  resolveAccount,
+  validateAccountId,
+} from "../core/accounts.ts";
 import { AppError } from "../core/errors.ts";
 import type { AccountMetadata, Provider } from "../core/provider.ts";
 import type { CliCommand } from "./command.ts";
@@ -61,13 +66,17 @@ export function registerAuthCommands(
                 provider_id: result.provider_id,
                 metadata: result.data,
               }
-            : result,
+            : {
+                account_id: result.account_id,
+                provider_id: result.provider_id,
+                error: result.error,
+              },
         ),
       );
       return;
     }
     for (const result of results) {
-      io.write_out(`Account: ${result.account_id} (${result.provider_id})\n`);
+      io.write_out(`Account: ${result.display_id} (${result.provider_id})\n`);
       io.write_out(
         `${"data" in result ? render(result.data, { columns: io.output_columns }) : `Error: ${result.error}`}\n`,
       );
@@ -80,11 +89,14 @@ export function registerAuthCommands(
     .description("List accounts without reading credentials");
   list.action(async () => {
     const config = await storeFor(list).read();
+    const flags = list.optsWithGlobals<CommonOptions>();
     print(
       list,
       "auth.list",
       config.accounts.map((account) => ({
-        id: account.id,
+        id: flags.json
+          ? account.id
+          : accountDisplayId(account, config.accounts),
         provider_id: account.provider_id,
         is_default: config.default_account_id === account.id,
         credentials: Object.fromEntries(
@@ -123,13 +135,21 @@ export function registerAuthCommands(
       credentials: await readCredentials(definition, io, flags),
     };
     registry.validateAccount(account);
-    await storeFor(add).add(account);
-    print(add, "auth.add", { id, provider_id: account.provider_id });
+    const config = await storeFor(add).add(account);
+    print(add, "auth.add", {
+      id: flags.json ? id : accountDisplayId(account, config.accounts),
+      provider_id: account.provider_id,
+    });
   });
   const use = auth.command("use <id>").description("Set the default account");
   use.action(async (id: string) => {
-    await storeFor(use).use(id);
-    print(use, "auth.use", { default_account_id: id });
+    const config = await storeFor(use).use(id);
+    const account = resolveAccount(config);
+    print(use, "auth.use", {
+      default_account_id: use.optsWithGlobals<CommonOptions>().json
+        ? account.id
+        : accountDisplayId(account, config.accounts),
+    });
   });
   const remove = auth
     .command("remove <id>")
@@ -137,7 +157,14 @@ export function registerAuthCommands(
       "Remove a local account reference; Provider resources are unaffected",
     );
   remove.action(async (id: string) => {
-    await storeFor(remove).remove(id);
-    print(remove, "auth.remove", { removed_account_id: id });
+    const store = storeFor(remove);
+    const config = await store.read();
+    const account = resolveAccount(config, id);
+    await store.remove(account.id);
+    print(remove, "auth.remove", {
+      removed_account_id: remove.optsWithGlobals<CommonOptions>().json
+        ? account.id
+        : accountDisplayId(account, config.accounts),
+    });
   });
 }

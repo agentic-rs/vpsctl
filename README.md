@@ -53,6 +53,18 @@ When `--provider` is omitted, `auth login` uses an existing account's provider o
 
 Account selection follows `--account`, then `VPS_CTL_ACCOUNT`, then the saved default. If none is set, interactive commands offer an account picker for that invocation. Use `auth use ID` to save a default. Adding an account or choosing one in the picker does not set the default. Noninteractive commands and `--json` require an explicit, environment, or saved selection. `--all` (also accepted as `--all-accounts`) bypasses the picker and cannot be combined with `--account` or `VPS_CTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
 
+When a provider has exactly one configured account, its ID (`vultr`, `runpod`, or `vast`) is an account shortcut. Use it with `--account` / `-a`, `VPS_CTL_ACCOUNT`, `auth use`, `auth remove`, or `auth login` to refresh that existing account. Exact account IDs take precedence over shortcuts; if several accounts share a provider, select a full ID or explicit alias. A shortcut is not displayed when it would collide with another account's exact ID.
+
+Account listings, pickers, headers, login summaries, and human-readable mutation previews show the provider shortcut when it is unambiguous. Configuration and JSON keep the original IDs, including `provider:email` IDs and explicit aliases; saving a default through a shortcut stores the full ID. New account IDs supplied to `auth add` remain literal.
+
+```sh
+bun run dev -a vast instance list
+bun run dev --account vultr spec list machine
+bun run dev auth use runpod
+# Refresh the unique existing account for Vultr.
+bun run dev auth login vultr
+```
+
 The previous root `login`, `account`, and `catalog` commands have moved to these scopes. Update scripts to use `auth login`, the corresponding `auth` verb (`auth get` replaces account metadata lookup), and `spec list <resource>`. JSON action names follow the same structure: `auth.login`, `auth.list`, `auth.get`, `spec.list.region`, and `credential.list.ssh_key`, for example. Provider and instance action names are unchanged.
 
 Prompts and guided status messages go to stderr, leaving stdout available for command results. JSON output has no guided decorations or selection prompts. Cancelling a prompt or login verification exits with code 130.

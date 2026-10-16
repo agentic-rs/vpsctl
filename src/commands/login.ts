@@ -1,6 +1,8 @@
 import {
   type Account,
+  accountDisplayId,
   deriveAccountId,
+  findAccount,
   validateAccountId,
 } from "../core/accounts.ts";
 import { AppError } from "../core/errors.ts";
@@ -95,9 +97,11 @@ export function registerLoginCommand(
     >();
     const store = storeFor(login);
     const config = await store.read();
-    const existing = config.accounts.find(
-      (account) => account.id === supplied_id,
-    );
+    const existing =
+      supplied_id === undefined
+        ? undefined
+        : findAccount(config.accounts, supplied_id);
+    const account_id = existing?.id ?? supplied_id;
     const guided =
       io.is_interactive &&
       !flags.json &&
@@ -106,7 +110,7 @@ export function registerLoginCommand(
     if (guided) io.intro?.("Connect a provider account");
     const definition = await resolveProvider(context, {
       provider_id: flags.provider,
-      account_id: supplied_id,
+      account_id,
       existing_account: existing,
       allow_prompt: !flags.json && !flags.credentials_stdin,
       fallback_provider_id: "vultr",
@@ -124,7 +128,7 @@ export function registerLoginCommand(
           verifyIdentity(
             provider,
             provider_id,
-            supplied_id,
+            account_id,
             progress?.signal ? { signal: progress.signal } : undefined,
           ),
         progress?.signal,
@@ -143,17 +147,18 @@ export function registerLoginCommand(
     };
     registry.validateAccount(account);
     checkCancelled(progress?.signal);
-    await store.save(account);
+    const saved = await store.save(account);
+    const display_id = accountDisplayId(account, saved.accounts);
     if (guided && io.note && io.outro) {
       io.note(
-        `Account ID: ${account.id}\nInstances: ${verified.instance_count}`,
+        `Account ID: ${display_id}\nInstances: ${verified.instance_count}`,
         "Account saved",
       );
       io.outro("Your account is ready.");
       return;
     }
     print(login, "auth.login", {
-      id: account.id,
+      id: flags.json ? account.id : display_id,
       provider_id,
       status: "authenticated",
       instance_count: verified.instance_count,

@@ -80,6 +80,7 @@ export interface CommandContext {
     action: string,
     data: unknown,
     account?: Account,
+    display_id?: string,
   ): void;
   readProvider(
     command: CliCommand,

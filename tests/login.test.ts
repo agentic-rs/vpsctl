@@ -234,6 +234,104 @@ afterEach(async () => {
 });
 
 describe("verified account login", () => {
+  test("refreshes a unique provider shortcut under its existing canonical ID", async () => {
+    const { run, store, state, connections, metadata_calls } = await fixture();
+    const id = `other:${state.email}`;
+    await store.add(account(id, "other"));
+    await store.use(id);
+    const result = await run(
+      ["auth", "login", "other", "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "refreshed-shortcut-key" }),
+      },
+    );
+    expect(result.exit_code).toBe(0);
+    expect(result.select_prompts).toEqual([]);
+    expect(metadata_calls).toEqual(["other"]);
+    expect(connections).toEqual([
+      {
+        provider_id: "other",
+        credentials: { api_key: "refreshed-shortcut-key" },
+      },
+    ]);
+    expect(JSON.parse(result.stdout)).toEqual({
+      action: "auth.login",
+      data: {
+        id,
+        provider_id: "other",
+        status: "authenticated",
+        instance_count: 1,
+      },
+    });
+    expect(await store.read()).toEqual({
+      version: 1,
+      default_account_id: id,
+      accounts: [
+        {
+          id,
+          provider_id: "other",
+          credentials: {
+            api_key: { source: "literal", value: "refreshed-shortcut-key" },
+          },
+        },
+      ],
+    });
+  });
+
+  test("rejects shortcut login credentials for a different verified identity", async () => {
+    const { run, store, state, config_path, list_calls } = await fixture();
+    await store.add(account("vultr:expected@example.invalid"));
+    const original = await readFile(config_path, "utf8");
+    state.email = "different@example.invalid";
+    const result = await run(
+      ["auth", "login", "vultr", "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "rejected-shortcut-key" }),
+      },
+    );
+    expect(result.exit_code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("conflict");
+    expect(list_calls).toEqual([]);
+    expect(await readFile(config_path, "utf8")).toBe(original);
+    expect(result.stderr).not.toContain("rejected-shortcut-key");
+  });
+
+  test("rejects ambiguous login shortcuts before reading or verifying credentials", async () => {
+    const { run, store, config_path, connections } = await fixture();
+    await store.add(account("vultr:first@example.invalid"));
+    await store.add(account("vultr:second@example.invalid"));
+    const original = await readFile(config_path, "utf8");
+    const result = await run(
+      ["auth", "login", "vultr", "--credentials-stdin", "--json"],
+      {
+        stdin_input: JSON.stringify({ api_key: "must-not-read-shortcut-key" }),
+      },
+    );
+    expect(result.exit_code).toBe(1);
+    expect(JSON.parse(result.stderr).error.message).toContain("ambiguous");
+    expect(result.stdin_reads).toBe(0);
+    expect(result.secret_prompts).toEqual([]);
+    expect(result.select_prompts).toEqual([]);
+    expect(connections).toEqual([]);
+    expect(await readFile(config_path, "utf8")).toBe(original);
+  });
+
+  test("guided login shows the provider shortcut while saving the full derived ID", async () => {
+    const { run, store, state } = await fixture();
+    const result = await run(["auth", "login", "--provider", "vultr"], {
+      is_interactive: true,
+      secret_input: "guided-shortcut-key",
+      guided_ui: true,
+    });
+    expect(result.exit_code).toBe(0);
+    expect(result.guided_events).toContainEqual({
+      type: "note",
+      message: "Account ID: vultr\nInstances: 1",
+    });
+    expect((await store.read()).accounts[0]?.id).toBe(`vultr:${state.email}`);
+    expect(JSON.stringify(result)).not.toContain("guided-shortcut-key");
+  });
+
   test("derives an omitted ID from verified metadata without asking for an account name", async () => {
     const { run, store, list_calls, metadata_calls, state } = await fixture();
     const result = await run(["auth", "login", "--json"], {

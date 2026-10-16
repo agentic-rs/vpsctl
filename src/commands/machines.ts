@@ -43,17 +43,22 @@ export async function listMachines(
         ? {
             account_id: result.account_id,
             provider_id: result.provider_id,
+            display_id: result.display_id,
             machines: result.data,
           }
         : result,
   );
   if (flags.json) {
-    context.print(command, "spec.list.machine", results);
+    context.print(
+      command,
+      "spec.list.machine",
+      results.map(({ display_id: _, ...result }) => result),
+    );
     return;
   }
   for (const result of results) {
     context.io.write_out(
-      `Account: ${result.account_id} (${result.provider_id})\n`,
+      `Account: ${result.display_id} (${result.provider_id})\n`,
     );
     context.io.write_out(
       `${"machines" in result ? render(result.machines.map(summary), { columns: context.io.output_columns }) : `Error: ${result.error}`}\n`,

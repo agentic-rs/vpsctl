@@ -2,6 +2,7 @@ import { CommanderError } from "commander";
 import {
   type Account,
   AccountStore,
+  accountDisplayId,
   defaultConfigPath,
   resolveAccount,
 } from "../core/accounts.ts";
@@ -41,7 +42,7 @@ export async function runCli(
     .option("--config <path>", "Account configuration file")
     .option(
       "-a, --account <id>",
-      "Named account (overrides VPS_CTL_ACCOUNT and the default)",
+      "Account ID or unique provider shortcut (overrides environment/default)",
     )
     .option("--json", "Print structured JSON")
     .exitOverride()
@@ -54,7 +55,9 @@ export async function runCli(
     nonblank(path, "Config path");
     return new AccountStore(path);
   };
-  const selectedAccount = async (command: CliCommand): Promise<Account> => {
+  const selectedAccount = async (
+    command: CliCommand,
+  ): Promise<{ account: Account; display_id: string }> => {
     const config = await storeFor(command).read();
     const flags = flagsFor(command);
     let account_id =
@@ -68,20 +71,27 @@ export async function runCli(
     ) {
       account_id = await io.select(
         "Choose an account",
-        config.accounts.map((account) => ({
-          value: account.id,
-          label: account.id,
-          hint: account.provider_id,
-        })),
+        config.accounts.map((account) => {
+          const label = accountDisplayId(account, config.accounts);
+          return {
+            value: account.id,
+            label,
+            ...(label === account.provider_id
+              ? {}
+              : { hint: account.provider_id }),
+          };
+        }),
       );
     }
-    return resolveAccount(config, account_id);
+    const account = resolveAccount(config, account_id);
+    return { account, display_id: accountDisplayId(account, config.accounts) };
   };
   const print = (
     command: CliCommand,
     action: string,
     data: unknown,
     account?: Account,
+    display_id?: string,
   ): void => {
     if (flagsFor(command).json) {
       io.write_out(
@@ -99,7 +109,9 @@ export async function runCli(
       );
     } else {
       if (account)
-        io.write_out(`Account: ${account.id} (${account.provider_id})\n`);
+        io.write_out(
+          `Account: ${display_id ?? account.id} (${account.provider_id})\n`,
+        );
       io.write_out(`${render(data, { columns: io.output_columns })}\n`);
     }
   };
@@ -108,15 +120,16 @@ export async function runCli(
     action: string,
     execute: (provider: Provider) => Promise<unknown>,
   ): Promise<void> => {
-    const account = await selectedAccount(command);
+    const { account, display_id } = await selectedAccount(command);
     const data = await execute(registry.connect(account, env));
-    print(command, action, data, account);
+    print(command, action, data, account, display_id);
   };
   const mutate = async (
     command: CliCommand,
     mutation: Mutation,
   ): Promise<void> => {
-    const account = await selectedAccount(command);
+    const { account, display_id } = await selectedAccount(command);
+    const flags = flagsFor(command);
     registry.validateAccount(account);
     const definition = registry.get(account.provider_id);
     if (mutation.instance_id !== undefined) {
@@ -128,7 +141,7 @@ export async function runCli(
       definition.validateEditInput?.(mutation.input);
     }
     const preview = {
-      account_id: account.id,
+      account_id: flags.json ? account.id : display_id,
       provider_id: account.provider_id,
       action: mutation.action,
       ...(mutation.instance_id ? { instance_id: mutation.instance_id } : {}),
@@ -142,7 +155,6 @@ export async function runCli(
         .filter(Boolean)
         .join(" "),
     };
-    const flags = flagsFor(command);
     if (flags.dry_run) {
       print(command, mutation.action, { ...preview, dry_run: true });
       return;
@@ -156,7 +168,13 @@ export async function runCli(
       }
       io.write_err(`${JSON.stringify(preview, null, 2)}\n`);
       if (!(await io.confirm("Apply this change?"))) {
-        print(command, mutation.action, { status: "cancelled" }, account);
+        print(
+          command,
+          mutation.action,
+          { status: "cancelled" },
+          account,
+          display_id,
+        );
         return;
       }
     }
@@ -166,6 +184,7 @@ export async function runCli(
       mutation.action,
       data ?? { status: "accepted", instance_id: mutation.instance_id },
       account,
+      display_id,
     );
   };
   const mutationFlags = (command: CliCommand): CliCommand =>

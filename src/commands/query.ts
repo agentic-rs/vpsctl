@@ -1,3 +1,4 @@
+import { accountDisplayId } from "../core/accounts.ts";
 import { AppError } from "../core/errors.ts";
 import type { Provider } from "../core/provider.ts";
 import type { CliCommand } from "./command.ts";
@@ -6,6 +7,7 @@ import type { CommandContext, CommonOptions } from "./context.ts";
 type AccountQueryResult<T> = {
   account_id: string;
   provider_id: string;
+  display_id: string;
 } & ({ data: T } | { error: string });
 
 export async function queryAllAccounts<T>(
@@ -27,6 +29,7 @@ export async function queryAllAccounts<T>(
       const identity = {
         account_id: account.id,
         provider_id: account.provider_id,
+        display_id: accountDisplayId(account, config.accounts),
       };
       try {
         return {
