@@ -48,7 +48,7 @@ interface RunOptions {
 async function fixture(
   responses: Partial<Record<ProviderId, Response[]>> = {},
 ) {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-gpu-cli-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-gpu-cli-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);

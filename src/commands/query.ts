@@ -17,10 +17,10 @@ export async function queryAllAccounts<T>(
 ): Promise<AccountQueryResult<T>[]> {
   const { env, registry, storeFor, setExitCode } = context;
   const flags = command.optsWithGlobals<CommonOptions>();
-  if (flags.account || env.VPS_CTL_ACCOUNT) {
+  if (flags.account || env.VPSCTL_ACCOUNT) {
     throw new AppError(
       "invalid_input",
-      "--all/--all-accounts cannot be combined with --account or VPS_CTL_ACCOUNT.",
+      "--all/--all-accounts cannot be combined with --account or VPSCTL_ACCOUNT.",
     );
   }
   const config = await storeFor(command).read();

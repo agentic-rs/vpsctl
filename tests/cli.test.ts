@@ -63,7 +63,7 @@ function instance(id: string): Instance {
 }
 
 async function fixture() {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-cli-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-cli-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);
@@ -396,11 +396,11 @@ describe("local accounts and account routing", () => {
     await addAccounts();
     const default_result = await run(["instance", "list", "--json"]);
     const env_result = await run(["instance", "list", "--json"], {
-      env: { ...credentials, VPS_CTL_ACCOUNT: "personal" },
+      env: { ...credentials, VPSCTL_ACCOUNT: "personal" },
     });
     const explicit_result = await run(
       ["instance", "list", "--account", "work", "--json"],
-      { env: { ...credentials, VPS_CTL_ACCOUNT: "personal" } },
+      { env: { ...credentials, VPSCTL_ACCOUNT: "personal" } },
     );
     for (const result of [default_result, env_result, explicit_result]) {
       expect(result.exit_code).toBe(0);
@@ -465,12 +465,12 @@ describe("local accounts and account routing", () => {
       for (const result of [
         await run(["instance", "list", flag, "--account", "work"]),
         await run(["instance", "list", flag], {
-          env: { ...credentials, VPS_CTL_ACCOUNT: "work" },
+          env: { ...credentials, VPSCTL_ACCOUNT: "work" },
         }),
       ]) {
         expect(result.exit_code).toBe(1);
         expect(result.stderr).toContain(
-          "cannot be combined with --account or VPS_CTL_ACCOUNT",
+          "cannot be combined with --account or VPSCTL_ACCOUNT",
         );
       }
       expect(connections).toEqual([]);

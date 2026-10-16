@@ -30,7 +30,7 @@ async function fixture(): Promise<{
   config_path: string;
   store: AccountStore;
 }> {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-accounts-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-accounts-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "nested", "config.json");
   return { config_path, store: new AccountStore(config_path) };
@@ -768,17 +768,22 @@ describe("credential resolution", () => {
   });
 });
 
-test("defaultConfigPath honors explicit path and XDG with a home fallback", () => {
+test("defaultConfigPath honors an explicit path", () => {
   expect(
     defaultConfigPath({
-      VPS_CTL_CONFIG: "/custom/accounts.json",
+      VPSCTL_CONFIG: "/custom/accounts.json",
       XDG_CONFIG_HOME: "/xdg",
     }),
   ).toBe("/custom/accounts.json");
-  expect(
-    defaultConfigPath({ VPS_CTL_CONFIG: " ", XDG_CONFIG_HOME: "/xdg" }),
-  ).toBe("/xdg/vps-ctl/config.json");
-  expect(defaultConfigPath({ XDG_CONFIG_HOME: "" })).toMatch(
-    /\/\.config\/vps-ctl\/config\.json$/,
-  );
+});
+
+test("defaultConfigPath uses the tokn directory and ignores blank overrides", () => {
+  for (const config_path of [undefined, "", "   "]) {
+    expect(
+      defaultConfigPath({
+        VPSCTL_CONFIG: config_path,
+        XDG_CONFIG_HOME: "/xdg",
+      }),
+    ).toMatch(/\/\.tokn\/vpsctl\/config\.json$/);
+  }
 });

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "vps-ctl",
+      "name": "vpsctl",
       "dependencies": {
         "@clack/prompts": "^1.8.1",
         "commander": "^15.0.0",

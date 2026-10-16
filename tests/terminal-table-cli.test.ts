@@ -15,7 +15,7 @@ const temp_dirs: string[] = [];
 const columns = 40;
 
 async function fixture() {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-terminal-table-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-terminal-table-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);

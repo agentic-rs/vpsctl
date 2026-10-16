@@ -174,11 +174,8 @@ function configError(error: unknown): AppError {
 export function defaultConfigPath(
   env: Readonly<Record<string, string | undefined>>,
 ): string {
-  if (env.VPS_CTL_CONFIG?.trim()) return env.VPS_CTL_CONFIG;
-  const config_home = env.XDG_CONFIG_HOME?.trim()
-    ? env.XDG_CONFIG_HOME
-    : join(homedir(), ".config");
-  return join(config_home, "vps-ctl", "config.json");
+  if (env.VPSCTL_CONFIG?.trim()) return env.VPSCTL_CONFIG;
+  return join(homedir(), ".tokn", "vpsctl", "config.json");
 }
 
 export function resolveAccount(

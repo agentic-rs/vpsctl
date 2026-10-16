@@ -53,7 +53,7 @@ function account(
 }
 
 async function fixture() {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-account-info-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-account-info-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);
@@ -183,7 +183,7 @@ describe("selected account metadata", () => {
   test("uses environment selection and lets an explicit account override it", async () => {
     const { run, addAccounts, connections } = await fixture();
     await addAccounts();
-    const env = { ...credentials, VPS_CTL_ACCOUNT: "personal" };
+    const env = { ...credentials, VPSCTL_ACCOUNT: "personal" };
     const selected = await run(["auth", "get", "--json"], env);
     const overridden = await run(
       ["auth", "get", "--account", "work", "--json"],
@@ -419,7 +419,7 @@ describe("metadata across accounts", () => {
         {},
       ),
       await run(["auth", "get", "--all-accounts", "--json"], {
-        VPS_CTL_ACCOUNT: "personal",
+        VPSCTL_ACCOUNT: "personal",
       }),
     ]) {
       expect(result.exit_code).toBe(1);
@@ -428,7 +428,7 @@ describe("metadata across accounts", () => {
         error: {
           code: "invalid_input",
           message:
-            "--all/--all-accounts cannot be combined with --account or VPS_CTL_ACCOUNT.",
+            "--all/--all-accounts cannot be combined with --account or VPSCTL_ACCOUNT.",
         },
       });
     }

@@ -20,7 +20,7 @@ interface RunOptions {
 const temp_dirs: string[] = [];
 
 async function fixture() {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-provider-selection-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-provider-selection-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);

@@ -1,10 +1,10 @@
 {
-  "name": "vps-ctl",
+  "name": "vpsctl",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "vps-ctl": "./src/cli.ts"
+    "vpsctl": "./src/cli.ts"
   },
   "scripts": {
     "dev": "bun run src/cli.ts",
@@ -13,7 +13,7 @@
     "check": "bun run typecheck && bun run lint && bun test",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "build": "bun build src/cli.ts --compile --outfile dist/vps-ctl"
+    "build": "bun build src/cli.ts --compile --outfile dist/vpsctl"
   },
   "engines": {
     "bun": ">=1.3.13"

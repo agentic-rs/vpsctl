@@ -29,7 +29,7 @@ const machine: MachineOffer = {
 };
 
 async function fixture(supports_machines = true) {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-machines-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-machines-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);
@@ -292,7 +292,7 @@ describe("machine discovery CLI", () => {
     await addAccounts();
     for (const [args, env] of [
       [["--account", "example-a"], {}],
-      [[], { VPS_CTL_ACCOUNT: "example-b" }],
+      [[], { VPSCTL_ACCOUNT: "example-b" }],
     ] as const) {
       const result = await run(
         ["spec", "list", "machine", "--all", "--json", ...args],

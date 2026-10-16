@@ -9,7 +9,7 @@ import { ProviderRegistry } from "../src/core/registry.ts";
 const temp_dirs: string[] = [];
 
 async function fixture() {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-command-help-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-command-help-"));
   temp_dirs.push(temp_dir);
   let connections = 0;
   let prompts = 0;
@@ -78,7 +78,7 @@ describe("scope usage", () => {
       ]) {
         const result = await run(argv);
         expect(result.exit_code).toBe(0);
-        expect(result.stdout).toContain(`Usage: vps-ctl ${scope}`);
+        expect(result.stdout).toContain(`Usage: vpsctl ${scope}`);
         expect(result.stdout).toContain("Commands:");
         expect(result.stderr).toBe("");
       }
@@ -88,7 +88,7 @@ describe("scope usage", () => {
       const { run } = await fixture();
       const help = await run([scope, "--help"]);
       expect(help.exit_code).toBe(0);
-      expect(help.stdout).toContain(`Usage: vps-ctl ${scope}`);
+      expect(help.stdout).toContain(`Usage: vpsctl ${scope}`);
       expect(help.stderr).toBe("");
 
       for (const argv of [
@@ -128,7 +128,7 @@ describe("scope usage", () => {
     ]) {
       const result = await run(argv);
       expect(result.exit_code).toBe(0);
-      expect(result.stdout).toContain("Usage: vps-ctl");
+      expect(result.stdout).toContain("Usage: vpsctl");
       expect(result.stderr).toBe("");
     }
     for (const argv of [
@@ -139,7 +139,7 @@ describe("scope usage", () => {
     ]) {
       const result = await run(argv);
       expect(result.exit_code).toBe(0);
-      expect(result.stdout).toContain(`Usage: vps-ctl ${argv[0]} ${argv[1]}`);
+      expect(result.stdout).toContain(`Usage: vpsctl ${argv[0]} ${argv[1]}`);
       expect(result.stderr).toBe("");
     }
     for (const argv of [

@@ -30,7 +30,7 @@ function account(id: string, value: string): Account {
 }
 
 async function fixture() {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-account-picker-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-account-picker-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);
@@ -190,9 +190,9 @@ describe("guided account selection", () => {
     for (const [argv, env] of [
       [
         ["--account", work_id, "instance", "list"],
-        { VPS_CTL_ACCOUNT: "personal" },
+        { VPSCTL_ACCOUNT: "personal" },
       ],
-      [["instance", "list"], { VPS_CTL_ACCOUNT: work_id }],
+      [["instance", "list"], { VPSCTL_ACCOUNT: work_id }],
       [["instance", "list"], {}],
     ] as const) {
       const result = await run([...argv], {

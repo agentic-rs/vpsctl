@@ -36,7 +36,7 @@ export async function runCli(
   const registry = options.registry ?? new ProviderRegistry();
   let exit_code = 0;
   const program = new CliCommand()
-    .name("vps-ctl")
+    .name("vpsctl")
     .description("Manage compute instances across local provider accounts.")
     .version("0.1.0")
     .option("--config <path>", "Account configuration file")
@@ -61,7 +61,7 @@ export async function runCli(
     const config = await storeFor(command).read();
     const flags = flagsFor(command);
     let account_id =
-      flags.account ?? env.VPS_CTL_ACCOUNT ?? config.default_account_id;
+      flags.account ?? env.VPSCTL_ACCOUNT ?? config.default_account_id;
     if (
       account_id === undefined &&
       io.is_interactive &&

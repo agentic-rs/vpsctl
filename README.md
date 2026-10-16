@@ -1,4 +1,4 @@
-# vps-ctl
+# vpsctl
 
 A Bun + TypeScript CLI for managing compute instances across multiple local accounts: Vultr Cloud Compute, RunPod GPU Pods, and Vast.ai on-demand GPU rentals.
 
@@ -51,9 +51,9 @@ When `--provider` is omitted, `auth login` uses an existing account's provider o
 
 `auth add NAME` offers the same provider picker for offline registration without verification. An explicit `--provider` or a `provider:email` prefix skips the picker. JSON mode, `--credentials-stdin`, and noninteractive account registration require `--provider` when it cannot be inferred from the ID. Both login and account registration support `--credentials-stdin` and `--credential` environment references.
 
-Account selection follows `--account`, then `VPS_CTL_ACCOUNT`, then the saved default. If none is set, interactive commands offer an account picker for that invocation. Use `auth use ID` to save a default. Adding an account or choosing one in the picker does not set the default. Noninteractive commands and `--json` require an explicit, environment, or saved selection. `--all` (also accepted as `--all-accounts`) bypasses the picker and cannot be combined with `--account` or `VPS_CTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
+Account selection follows `--account`, then `VPSCTL_ACCOUNT`, then the saved default. If none is set, interactive commands offer an account picker for that invocation. Use `auth use ID` to save a default. Adding an account or choosing one in the picker does not set the default. Noninteractive commands and `--json` require an explicit, environment, or saved selection. `--all` (also accepted as `--all-accounts`) bypasses the picker and cannot be combined with `--account` or `VPSCTL_ACCOUNT`; a failure in one account preserves the other results and returns exit code 1.
 
-When a provider has exactly one configured account, its ID (`vultr`, `runpod`, or `vast`) is an account shortcut. Use it with `--account` / `-a`, `VPS_CTL_ACCOUNT`, `auth use`, `auth remove`, or `auth login` to refresh that existing account. Exact account IDs take precedence over shortcuts; if several accounts share a provider, select a full ID or explicit alias. A shortcut is not displayed when it would collide with another account's exact ID.
+When a provider has exactly one configured account, its ID (`vultr`, `runpod`, or `vast`) is an account shortcut. Use it with `--account` / `-a`, `VPSCTL_ACCOUNT`, `auth use`, `auth remove`, or `auth login` to refresh that existing account. Exact account IDs take precedence over shortcuts; if several accounts share a provider, select a full ID or explicit alias. A shortcut is not displayed when it would collide with another account's exact ID.
 
 Account listings, pickers, headers, login summaries, and human-readable mutation previews show the provider shortcut when it is unambiguous. Configuration and JSON keep the original IDs, including `provider:email` IDs and explicit aliases; saving a default through a shortcut stores the full ID. New account IDs supplied to `auth add` remain literal.
 
@@ -196,7 +196,7 @@ API references: [RunPod REST v2](https://docs.runpod.io/api-reference-v2/overvie
 
 ## Account configuration
 
-The default path is `$XDG_CONFIG_HOME/vps-ctl/config.json`, falling back to `~/.config/vps-ctl/config.json`. Override it with `VPS_CTL_CONFIG` or `--config`. The CLI uses atomic writes and rejects concurrent configuration writers.
+The default path is `~/.tokn/vpsctl/config.json`. Override it with `--config` or `VPSCTL_CONFIG`. The CLI uses atomic writes and rejects concurrent configuration writers.
 
 ```json
 {
@@ -246,7 +246,7 @@ See Vultr's [API key creation guide](https://docs.vultr.com/platform/iam/organiz
 bun run check   # Type checking, Biome, and the Bun test suite
 bun run format
 bun run build
-./dist/vps-ctl --help
+./dist/vpsctl --help
 ```
 
 Tests use temporary account configurations and injected provider transports. They do not require API credentials or create resources.

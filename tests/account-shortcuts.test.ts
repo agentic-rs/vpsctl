@@ -31,7 +31,7 @@ interface RunOptions {
 }
 
 async function fixture() {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-shortcuts-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-shortcuts-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);
@@ -147,9 +147,9 @@ describe("provider account shortcuts across CLI commands", () => {
     await addAccounts();
     const original = await readFile(config_path, "utf8");
     for (const [provider_id, args, env] of [
-      ["vultr", ["--account", "vultr"], { VPS_CTL_ACCOUNT: "vast" }],
+      ["vultr", ["--account", "vultr"], { VPSCTL_ACCOUNT: "vast" }],
       ["runpod", ["-a", "runpod"], {}],
-      ["vast", [], { VPS_CTL_ACCOUNT: "vast" }],
+      ["vast", [], { VPSCTL_ACCOUNT: "vast" }],
     ] as const) {
       const result = await run(["instance", "list", ...args, "--json"], {
         env,

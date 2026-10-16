@@ -53,7 +53,7 @@ function account(id: string, provider_id = "vultr"): Account {
 }
 
 async function fixture() {
-  const temp_dir = await mkdtemp(join(tmpdir(), "vps-ctl-login-"));
+  const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-login-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
   const store = new AccountStore(config_path);
