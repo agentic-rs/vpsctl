@@ -23,6 +23,7 @@ export interface PromptProgress {
 export interface CliIO {
   write_out(text: string): void;
   write_err(text: string): void;
+  readonly output_columns?: number | undefined;
   is_interactive: boolean;
   confirm(message: string): Promise<boolean>;
   read_text?(message: string): Promise<string>;

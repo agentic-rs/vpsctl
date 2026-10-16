@@ -57,6 +57,8 @@ The previous root `login`, `account`, and `catalog` commands have moved to these
 
 Prompts and guided status messages go to stderr, leaving stdout available for command results. JSON output has no guided decorations or selection prompts. Cancelling a prompt or login verification exits with code 130.
 
+List tables adapt to the current stdout terminal width. On smaller terminals they keep identity, status, availability, and price columns first, hide lower-priority fields, and list the hidden field names below the table. Long cell values end with `…`; Unicode labels align by displayed width. Redirected output and outputs without a known terminal width retain every column. Use `--json` for complete field values.
+
 ## Authentication and account metadata
 
 `auth get` queries live provider metadata for the selected account. `auth get --all` queries every configured account independently and retains successful results if another account fails. `auth list` remains a local configuration listing without network requests.

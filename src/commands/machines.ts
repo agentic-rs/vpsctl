@@ -56,7 +56,7 @@ export async function listMachines(
       `Account: ${result.account_id} (${result.provider_id})\n`,
     );
     context.io.write_out(
-      `${"machines" in result ? render(result.machines.map(summary)) : `Error: ${result.error}`}\n`,
+      `${"machines" in result ? render(result.machines.map(summary), { columns: context.io.output_columns }) : `Error: ${result.error}`}\n`,
     );
   }
   if (results.length === 0) {

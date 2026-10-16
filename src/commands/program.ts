@@ -100,7 +100,7 @@ export async function runCli(
     } else {
       if (account)
         io.write_out(`Account: ${account.id} (${account.provider_id})\n`);
-      io.write_out(`${render(data)}\n`);
+      io.write_out(`${render(data, { columns: io.output_columns })}\n`);
     }
   };
   const readProvider = async (

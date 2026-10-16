@@ -62,7 +62,7 @@ export function registerInstanceCommands(
       for (const result of results) {
         io.write_out(`Account: ${result.account_id} (${result.provider_id})\n`);
         io.write_out(
-          `${result.instances ? render(result.instances.map(summary)) : `Error: ${result.error}`}\n`,
+          `${result.instances ? render(result.instances.map(summary), { columns: io.output_columns }) : `Error: ${result.error}`}\n`,
         );
       }
       if (results.length === 0)

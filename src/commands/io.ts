@@ -28,6 +28,9 @@ function promptValue<Value>(value: Value | typeof CANCEL_SYMBOL): Value {
 export const default_io: CliIO = {
   write_out: (value) => process.stdout.write(value),
   write_err: (value) => process.stderr.write(value),
+  get output_columns() {
+    return process.stdout.isTTY ? process.stdout.columns : undefined;
+  },
   is_interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
   async read_text(message) {
     return promptValue(

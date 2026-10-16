@@ -69,7 +69,7 @@ export function registerAuthCommands(
     for (const result of results) {
       io.write_out(`Account: ${result.account_id} (${result.provider_id})\n`);
       io.write_out(
-        `${"data" in result ? render(result.data) : `Error: ${result.error}`}\n`,
+        `${"data" in result ? render(result.data, { columns: io.output_columns }) : `Error: ${result.error}`}\n`,
       );
     }
     if (results.length === 0)
