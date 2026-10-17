@@ -35,7 +35,7 @@ Commands follow `<scope> <verb> [resource]`. Run a scope without a verb, such as
 | --- | --- |
 | `auth` | `login`, `add`, `list`, `get`, `use`, `remove` |
 | `provider` | `list` |
-| `instance` | `list`, `get`, `create` (`buy`), `edit`, `start`, `stop`, `reboot`, `destroy` |
+| `instance` | `list`, `get`, `login` (`ssh`), `create` (`buy`), `edit`, `start`, `stop`, `reboot`, `destroy` |
 | `spec` | `list machine`, `list region`, `list plan`, `list image`, `list offer` |
 | `credential` | `list ssh-key` |
 
@@ -123,6 +123,30 @@ Discovery references: [Vultr plan schemas](https://github.com/vultr/govultr/blob
 
 ## Discover and manage instances
 
+### Log into an instance through ctl
+
+Requires the `ctl` CLI on PATH. `instance login` selects a running instance, fetches its current connection details, creates or updates a saved ctl host, and opens `ctl ssh` using that host's managed connection method. An exact instance ID takes precedence over an exact name; duplicate names require an ID. Omitting the instance opens a searchable picker in a terminal. Account selection follows the usual account flag, environment, default, and picker rules.
+
+```sh
+bun run dev instance login
+bun run dev -a vultr instance login INSTANCE_ID
+bun run dev -a runpod instance login INSTANCE_ID --identity-file KEY_FILE
+bun run dev -a vultr instance login INSTANCE_ID --user root --port 22
+bun run dev --json instance login INSTANCE_ID --dry-run
+```
+
+The saved host name is a stable `vpsctl-` identifier derived from the canonical provider, account ID, and instance ID. Instance label changes keep the same host; different accounts have separate bindings. Keep this generated name and its connection method named `vpsctl` so future logins find the same definition. Duplicate managed hosts or missing/ambiguous managed methods fail explicitly. All catalog changes use ctl commands; vpsctl does not edit ctl's catalog file.
+
+Each login refreshes the destination and any provider-reported SSH port. An explicit `--port` wins; when the provider does not report a port, the saved ctl port is retained before using the default. An explicit `--user` overrides the provider-reported username, followed by the saved ctl username and any provider-specific default. When the username is unknown, a terminal prompt offers `root` for review; scripts require `--user` or an existing saved username. RunPod proxy usernames come from the provider or an explicit override. `--identity-file` saves an absolute key-file reference in ctl; omitting it preserves the saved identity. Passwords, passphrases, host verification, and configured VPN/gateway routes remain managed by ctl. Endpoint overrides such as a custom hostname, SSH config alias, or Tailscale target on the managed method must be resolved in ctl before vpsctl refreshes that method.
+
+Vultr uses its public address for SSH and requires a known username. RunPod prefers its published direct endpoint and otherwise uses its proxy endpoint and routing username. Vast.ai uses a published SSH port mapping when available and otherwise its proxy endpoint, including the provider's Jupyter port adjustment. vpsctl does not guess GPU SSH ports from public addresses. The instance must already be running with SSH available; login does not start instances or install remote components.
+
+`--dry-run` makes read-only provider and ctl catalog queries and previews the planned host synchronization without saving a host or opening SSH. JSON login requires `--dry-run` and an instance selector; it never prompts or opens a session. Successful synchronization hands the terminal to ctl and returns its connection exit status. A synchronization failure stops before connecting; an SSH failure leaves the saved host available for inspection with ctl.
+
+Connection references: [RunPod SSH](https://docs.runpod.io/pods/configuration/use-ssh), [RunPod Pod response](https://docs.runpod.io/api-reference-v2/pods/get-a-pod), [Vast.ai SSH](https://docs.vast.ai/guides/instances/connect/ssh), and [Vast.ai CLI connection resolution](https://github.com/vast-ai/vast-cli/blob/master/vast.py).
+
+### Create an instance
+
 Run `instance create` in a terminal to set requirements, compare matching machines, configure the instance, and review advertised pricing before the final billable confirmation. The `buy` alias uses the same guided flow.
 
 ```sh
@@ -175,7 +199,7 @@ bun run dev --account work instance edit INSTANCE_ID --plan NEW_PLAN_ID
 bun run dev --account work instance destroy INSTANCE_ID --dry-run
 ```
 
-Every instance mutation supports `--dry-run` and `--yes`. Dry runs show the account, operation, input, and relevant effects without applying changes. Guided creation queries the provider to display available hardware and advertised pricing, including with `--dry-run`; all other dry runs stay offline without loading credentials or validating live capacity. Interactive changes require confirmation; scripts must pass `--yes`. Operations return once the API accepts them; use `instance get` to inspect subsequent progress.
+Every provider mutation supports `--dry-run` and `--yes`. Dry runs show the account, operation, input, and relevant effects without applying changes. Guided creation queries the provider to display available hardware and advertised pricing, including with `--dry-run`; other provider-mutation dry runs stay offline without loading credentials or validating live capacity. Instance login previews also query current connection details, as described above. Interactive provider changes require confirmation; scripts must pass `--yes`. Operations return once the API accepts them; use `instance get` to inspect subsequent progress.
 
 Editing sends only supplied fields. Tags replace the complete tag list; `--clear-tags` sends an empty list. Hostname is create-only because changing it can cause a Vultr OS reinstall. Vultr plan changes are subject to upgrade restrictions and can affect billing and availability. Plan region filters show supported locations rather than guaranteed current capacity.
 

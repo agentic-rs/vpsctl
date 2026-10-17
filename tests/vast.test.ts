@@ -228,6 +228,7 @@ describe("Vast.ai inventory", () => {
       hourly_cost: 0.25,
       ssh_host: "ssh.example.invalid",
       ssh_port: 22000,
+      ssh_method: "proxy",
     });
     expect(result[1]?.label).toBe("");
     expect(result[1]).not.toHaveProperty("hourly_cost");
@@ -279,6 +280,86 @@ describe("Vast.ai inventory", () => {
       status: "unknown",
       public_ipv4: "",
       public_ipv6: "2001:db8::10",
+    });
+  });
+
+  test("uses a published direct SSH mapping instead of the proxy endpoint", async () => {
+    const { provider } = harness([
+      json({
+        instances: [
+          instance({
+            ports: { "22/tcp": [{ HostPort: "32022" }] },
+            image_runtype: "jupyter_direct",
+          }),
+        ],
+        next_token: null,
+      }),
+    ]);
+    expect((await provider.listInstances())[0]).toMatchObject({
+      ssh_host: "192.0.2.10",
+      ssh_port: 32022,
+      ssh_method: "direct",
+    });
+  });
+
+  test("uses the documented SSH port offset for a Jupyter proxy", async () => {
+    const { provider } = harness([
+      json({
+        instances: [instance({ image_runtype: "jupyter_proxy" })],
+        next_token: null,
+      }),
+    ]);
+    expect((await provider.listInstances())[0]).toMatchObject({
+      ssh_host: "ssh.example.invalid",
+      ssh_port: 22001,
+      ssh_method: "proxy",
+    });
+  });
+
+  test("never invents a direct port when no SSH endpoint is published", async () => {
+    const { provider } = harness([
+      json({
+        instances: [instance({ ssh_host: null, ssh_port: null })],
+        next_token: null,
+      }),
+    ]);
+    const result = (await provider.listInstances())[0];
+    expect(result?.public_ipv4).toBe("192.0.2.10");
+    expect(result?.ssh_host).toBeUndefined();
+    expect(result?.ssh_port).toBeUndefined();
+    expect(result?.ssh_method).toBeUndefined();
+  });
+
+  test("falls back to the proxy when a mapped direct port has no public address", async () => {
+    const { provider } = harness([
+      json({
+        instances: [
+          instance({
+            public_ipaddr: null,
+            ports: { "22/tcp": [{ HostPort: 32022 }] },
+          }),
+        ],
+        next_token: null,
+      }),
+    ]);
+    expect((await provider.listInstances())[0]).toMatchObject({
+      ssh_host: "ssh.example.invalid",
+      ssh_port: 22000,
+      ssh_method: "proxy",
+    });
+  });
+
+  test("rejects an overflowing Jupyter SSH port", async () => {
+    const { provider } = harness([
+      json({
+        instances: [
+          instance({ image_runtype: "jupyter_proxy", ssh_port: 65535 }),
+        ],
+        next_token: null,
+      }),
+    ]);
+    await expect(provider.listInstances()).rejects.toMatchObject({
+      code: "invalid_response",
     });
   });
 

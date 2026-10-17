@@ -144,6 +144,7 @@ export function validateResponse<T>(
 const ssh_endpoint_schema = z.object({
   host: z.string().min(1),
   port: z.number().int().positive().max(65535),
+  username: z.string().min(1).nullish(),
 });
 
 export const pod_schema = z.object({
@@ -335,6 +336,13 @@ export function normalizeInstance(value: z.infer<typeof pod_schema>): Instance {
     ...(value.cost === undefined ? {} : { hourly_cost: value.cost }),
     ...(ssh_endpoint === undefined || ssh_endpoint === null
       ? {}
-      : { ssh_host: ssh_endpoint.host, ssh_port: ssh_endpoint.port }),
+      : {
+          ssh_host: ssh_endpoint.host,
+          ssh_port: ssh_endpoint.port,
+          ssh_method: value.ssh?.direct == null ? "proxy" : "direct",
+          ...(ssh_endpoint.username == null
+            ? {}
+            : { ssh_user: ssh_endpoint.username }),
+        }),
   };
 }

@@ -262,9 +262,11 @@ describe("RunPod inventory", () => {
       hourly_cost: 0.85,
       ssh_host: "192.0.2.10",
       ssh_port: 22022,
+      ssh_user: "synthetic-user",
+      ssh_method: "direct",
     });
     expect(result.gpu_memory_gb).toBeUndefined();
-    expect(JSON.stringify(result)).not.toMatch(/private|synthetic-user/);
+    expect(JSON.stringify(result)).not.toMatch(/private|command/);
     expect(requests[0]?.url).toBe("https://api.runpod.io/v2/pods/pod-1");
   });
 
@@ -290,13 +292,36 @@ describe("RunPod inventory", () => {
     const { provider } = harness([
       Response.json(
         pod({
-          ssh: { direct: null, proxy: { host: "ssh.runpod.io", port: 22 } },
+          ssh: {
+            direct: null,
+            proxy: {
+              host: "ssh.runpod.io",
+              port: 22,
+              username: "pod-1-example",
+              command: "private-provider-command",
+            },
+          },
         }),
       ),
     ]);
     const result = await provider.getInstance("pod-1");
     expect(result.ssh_host).toBe("ssh.runpod.io");
+    expect(result.ssh_port).toBe(22);
+    expect(result.ssh_user).toBe("pod-1-example");
+    expect(result.ssh_method).toBe("proxy");
     expect(result.public_ipv4).toBe("");
+    expect(JSON.stringify(result)).not.toContain("private-provider-command");
+  });
+
+  test("does not invent a missing endpoint username", async () => {
+    const { provider } = harness([
+      Response.json(
+        pod({ ssh: { direct: { host: "192.0.2.10", port: 22022 } } }),
+      ),
+    ]);
+    const result = await provider.getInstance("pod-1");
+    expect(result.ssh_method).toBe("direct");
+    expect(result.ssh_user).toBeUndefined();
   });
 
   test("preserves existing CPU Pod identity without inventing GPU data", async () => {

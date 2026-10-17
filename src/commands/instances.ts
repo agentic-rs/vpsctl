@@ -14,6 +14,7 @@ import {
   positiveInteger,
   summary,
 } from "./input.ts";
+import { registerInstanceLoginCommand } from "./instance-login.ts";
 import { render } from "./output.ts";
 import { queryAllAccounts } from "./query.ts";
 
@@ -25,6 +26,7 @@ export function registerInstanceCommands(
   const instances = program
     .command("instance")
     .description("Create, inspect, and control compute instances");
+  registerInstanceLoginCommand(instances, context);
   const list = instances
     .command("list")
     .description("List instances for one account or all registered accounts")

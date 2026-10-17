@@ -1,4 +1,5 @@
 import type { Account, AccountStore } from "../core/accounts.ts";
+import type { CtlClient } from "../core/ctl.ts";
 import type {
   CreateInstanceInput,
   EditInstanceInput,
@@ -55,6 +56,7 @@ export interface CliOptions {
   env?: Readonly<Record<string, string | undefined>>;
   io?: CliIO;
   registry?: ProviderRegistry;
+  ctl?: CtlClient;
 }
 
 export interface CommonOptions {
@@ -94,7 +96,12 @@ export interface CommandContext {
   env: Readonly<Record<string, string | undefined>>;
   io: CliIO;
   registry: ProviderRegistry;
+  ctl: CtlClient;
   storeFor(command: CliCommand): AccountStore;
+  selectedAccount(
+    command: CliCommand,
+    allow_prompt?: boolean,
+  ): Promise<{ account: Account; display_id: string }>;
   print(
     command: CliCommand,
     action: string,

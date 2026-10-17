@@ -6,6 +6,7 @@ import {
   defaultConfigPath,
   resolveAccount,
 } from "../core/accounts.ts";
+import { createCtlClient } from "../core/ctl.ts";
 import { AppError } from "../core/errors.ts";
 import type {
   CreateInstanceInput,
@@ -255,7 +256,9 @@ export async function runCli(
     env,
     io,
     registry,
+    ctl: options.ctl ?? createCtlClient(env),
     storeFor,
+    selectedAccount,
     print,
     readProvider,
     mutate,

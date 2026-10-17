@@ -81,6 +81,7 @@ export const instance_schema = z.object({
   intended_status: nullable_text,
   cur_state: nullable_text,
   image_uuid: nullable_text,
+  image_runtype: nullable_text,
   public_ipaddr: nullable_text,
   dph_total: nullable_number,
   gpu_name: nullable_text,
@@ -88,6 +89,23 @@ export const instance_schema = z.object({
   gpu_ram: nullable_number,
   ssh_host: nullable_text,
   ssh_port: z.number().int().min(1).max(65535).nullish(),
+  ports: z
+    .object({
+      "22/tcp": z
+        .array(
+          z.object({
+            HostPort: z.union([
+              z.number().int().min(1).max(65535),
+              z
+                .string()
+                .regex(/^[1-9]\d{0,4}$/)
+                .refine((value) => Number(value) <= 65535),
+            ]),
+          }),
+        )
+        .nullish(),
+    })
+    .nullish(),
 });
 export const offer_schema = z.object({
   id: numeric_id,
@@ -301,6 +319,21 @@ function status(value: string | null | undefined): InstanceStatus {
 export function normalizeInstance(
   value: z.infer<typeof instance_schema>,
 ): Instance {
+  const mapped_port = value.ports?.["22/tcp"]?.[0]?.HostPort;
+  const direct =
+    mapped_port !== undefined && isIP(value.public_ipaddr ?? "") !== 0;
+  const ssh_host = direct ? value.public_ipaddr : value.ssh_host;
+  const ssh_port = direct
+    ? Number(mapped_port)
+    : value.ssh_port == null
+      ? undefined
+      : value.ssh_port + (value.image_runtype?.includes("jupyter") ? 1 : 0);
+  if (ssh_port !== undefined && ssh_port > 65535) {
+    throw new AppError(
+      "invalid_response",
+      "Vast.ai returned invalid SSH connection details.",
+    );
+  }
   return {
     provider_id: "vast",
     id: String(value.id),
@@ -321,8 +354,11 @@ export function normalizeInstance(
     ...(value.gpu_name == null ? {} : { gpu_name: value.gpu_name }),
     ...(value.num_gpus == null ? {} : { gpu_count: value.num_gpus }),
     ...(value.gpu_ram == null ? {} : { gpu_memory_gb: value.gpu_ram / 1000 }),
-    ...(value.ssh_host == null ? {} : { ssh_host: value.ssh_host }),
-    ...(value.ssh_port == null ? {} : { ssh_port: value.ssh_port }),
+    ...(ssh_host == null ? {} : { ssh_host }),
+    ...(ssh_port === undefined ? {} : { ssh_port }),
+    ...(ssh_host == null || ssh_port === undefined
+      ? {}
+      : { ssh_method: direct ? "direct" : "proxy" }),
   };
 }
 

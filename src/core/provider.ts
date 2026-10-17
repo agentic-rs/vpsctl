@@ -29,6 +29,8 @@ export interface Instance {
   currency?: string;
   ssh_host?: string;
   ssh_port?: number;
+  ssh_user?: string;
+  ssh_method?: "direct" | "proxy";
 }
 
 export interface AcceptedInstance {

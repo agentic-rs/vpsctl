@@ -60,6 +60,10 @@ export function summary(instance: Instance): Record<string, unknown> {
     ...(instance.currency === undefined ? {} : { currency: instance.currency }),
     ...(instance.ssh_host === undefined ? {} : { ssh_host: instance.ssh_host }),
     ...(instance.ssh_port === undefined ? {} : { ssh_port: instance.ssh_port }),
+    ...(instance.ssh_user === undefined ? {} : { ssh_user: instance.ssh_user }),
+    ...(instance.ssh_method === undefined
+      ? {}
+      : { ssh_method: instance.ssh_method }),
   };
 }
 
