@@ -77,9 +77,9 @@ export const vultr_info: ProviderInfo = {
     destroy: "Vultr releases the instance's IP address when it is destroyed.",
   },
   instance_password_help: {
-    url: "https://console.vultr.com/",
+    url: "https://console.vultr.com/subs/?id={instance_id}&sub_type=instances",
     instructions:
-      "Open Compute, select this instance, then Overview → View Root Password. Use the displayed root or linuxuser credentials.",
+      "Open Overview → View Root Password. Use the displayed root or linuxuser credentials.",
   },
 };
 

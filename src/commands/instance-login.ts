@@ -14,6 +14,7 @@ import { validateSshPassword } from "../core/ssh-password.ts";
 import type { CliCommand } from "./command.ts";
 import type { CommandContext, CommonOptions } from "./context.ts";
 import { nonblank, positiveInteger } from "./input.ts";
+import { instancePasswordHelp } from "./instance-password-help.ts";
 import { sanitizeTerminalText } from "./output.ts";
 
 interface LoginOptions extends CommonOptions {
@@ -102,10 +103,10 @@ function validateLoginCredential(
   }
 }
 
-function passwordInstructions(provider: Provider): string {
-  const help = provider.info.instance_password_help;
+function passwordInstructions(provider: Provider, instance_id: string): string {
+  const help = instancePasswordHelp(provider.info, instance_id);
   return help
-    ? `Retrieve this instance's password at ${sanitizeTerminalText(help.url)}\n${sanitizeTerminalText(help.instructions)}`
+    ? `Retrieve this instance's password at ${help.url}\n${help.instructions}`
     : "Open this instance's Overview page in the provider website and retrieve its login password.";
 }
 
@@ -365,10 +366,12 @@ export function registerInstanceLoginCommand(
       else if (!context.io.is_interactive || !context.io.read_secret) {
         throw new AppError(
           "not_found",
-          `No saved password is available and the provider did not return one. ${passwordInstructions(provider)}\nRun instance login in an interactive terminal to enter and save it, or use --auth ctl for ctl-managed authentication.`,
+          `No saved password is available and the provider did not return one. ${passwordInstructions(provider, instance.id)}\nRun instance login in an interactive terminal to enter and save it, or use --auth ctl for ctl-managed authentication.`,
         );
       } else {
-        context.io.write_err(`${passwordInstructions(provider)}\n`);
+        context.io.write_err(
+          `${passwordInstructions(provider, instance.id)}\n`,
+        );
       }
     }
     let user =

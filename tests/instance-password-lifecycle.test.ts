@@ -295,13 +295,16 @@ describe("instance password creation lifecycle", () => {
   test("provides sanitized provider website instructions and a masked-entry next step after creation", async () => {
     const { run } = await fixture({
       password_help: {
-        url: "https://console.example.test/instances\u001b",
+        url: "https://console.vultr.com/subs/?id={instance_id}&sub_type=instances\u001b",
         instructions: "Open Overview\u001b and reveal the root password.",
       },
     });
     const result = await run(["instance", "create", "--yes", "--json"]);
     expect(result.exit_code).toBe(0);
-    expect(result.stderr).toContain("https://console.example.test/instances");
+    expect(result.stderr).toContain(
+      "https://console.vultr.com/subs/?id=created-instance&sub_type=instances",
+    );
+    expect(result.stderr).not.toContain("{instance_id}");
     expect(result.stderr).toContain("and reveal the root password");
     expect(result.stderr).toContain("instance login");
     expect(result.stderr).toContain("enter and save");

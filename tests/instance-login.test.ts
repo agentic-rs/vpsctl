@@ -141,7 +141,7 @@ async function fixture(
     name: "Example provider",
     capabilities: ["instances"],
     instance_password_help: {
-      url: "https://console.vultr.com/",
+      url: "https://console.vultr.com/subs/?id={instance_id}&sub_type=instances",
       instructions:
         "Open Compute, select this instance, then Overview → View Root Password.",
     },
@@ -399,7 +399,10 @@ describe("instance login through ctl", () => {
     });
 
     expect(result.exit_code).toBe(0);
-    expect(result.stderr).toContain("https://console.vultr.com/");
+    expect(result.stderr).toContain(
+      "https://console.vultr.com/subs/?id=instance-example&sub_type=instances",
+    );
+    expect(result.stderr).not.toContain("{instance_id}");
     expect(result.stderr).toContain("View Root Password");
     expect(result.secret_prompts).toEqual([
       "Instance password for root (saved locally)",

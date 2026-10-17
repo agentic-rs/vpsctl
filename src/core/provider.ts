@@ -137,6 +137,7 @@ export interface ProviderInfo {
   capabilities: readonly string[];
   operation_notes?: Partial<Record<InstanceAction, string>>;
   instance_password_help?: {
+    /** Console URL; {instance_id} is replaced with the encoded instance ID. */
     url: string;
     instructions: string;
   };

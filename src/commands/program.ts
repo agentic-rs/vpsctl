@@ -30,18 +30,22 @@ import type {
 import { type CreateReview, prepareCreate } from "./create.ts";
 import { registerCredentialCommands } from "./credential.ts";
 import { nonblank } from "./input.ts";
+import { instancePasswordHelp } from "./instance-password-help.ts";
 import { registerInstanceCommands } from "./instances.ts";
 import { default_io } from "./io.ts";
-import { render, sanitizeTerminalText } from "./output.ts";
+import { render } from "./output.ts";
 import { registerProviderCommands } from "./provider.ts";
 import { registerSpecCommands } from "./spec.ts";
 
 export type { CliIO, CliOptions } from "./context.ts";
 
-function creationPasswordWarning(provider: Provider): string {
-  const help = provider.info.instance_password_help;
+function creationPasswordWarning(
+  provider: Provider,
+  instance_id: string,
+): string {
+  const help = instancePasswordHelp(provider.info, instance_id);
   const guidance = help
-    ? `Retrieve it from the provider website at ${sanitizeTerminalText(help.url)}. ${sanitizeTerminalText(help.instructions)}`
+    ? `Retrieve it from the provider website at ${help.url}. ${help.instructions}`
     : "Retrieve it from this instance's Overview page on the provider website.";
   return `The instance was created, but its login password could not be saved. ${guidance} Run instance login in an interactive terminal to enter and save it.`;
 }
@@ -288,10 +292,10 @@ export async function runCli(
             credential,
           );
         } else if (provider.getInstanceLoginCredential !== undefined) {
-          credential_warning = creationPasswordWarning(provider);
+          credential_warning = creationPasswordWarning(provider, created.id);
         }
       } catch {
-        credential_warning = creationPasswordWarning(provider);
+        credential_warning = creationPasswordWarning(provider, created.id);
       }
     } else {
       data = await mutation.execute(provider);
