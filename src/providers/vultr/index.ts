@@ -4,6 +4,7 @@ import { filterMachines, validateMachineQuery } from "../../core/machines.ts";
 import type {
   AccountMetadata,
   CreateInstanceInput,
+  CreateInstanceOptions,
   EditInstanceInput,
   Image,
   Instance,
@@ -74,6 +75,11 @@ export const vultr_info: ProviderInfo = {
     start: "Vultr may restart an already running instance.",
     stop: "Vultr billing continues until the instance is destroyed.",
     destroy: "Vultr releases the instance's IP address when it is destroyed.",
+  },
+  instance_password_help: {
+    url: "https://console.vultr.com/",
+    instructions:
+      "Open Compute, select this instance, then Overview → View Root Password. Use the displayed root or linuxuser credentials.",
   },
 };
 
@@ -179,13 +185,23 @@ export class VultrProvider implements Provider {
     return normalizeInstanceLoginCredential(result.instance);
   }
 
-  async createInstance(input: CreateInstanceInput): Promise<Instance> {
+  async createInstance(
+    input: CreateInstanceInput,
+    options?: CreateInstanceOptions,
+  ): Promise<Instance> {
     const response = await this.#transport.request(
       "/instances",
       "POST",
       createBody(input),
     );
-    return instanceResponse(response, true);
+    const instance = instanceResponse(response, true);
+    if (options?.on_login_credential !== undefined) {
+      const credential = createdInstanceCredential(response);
+      if (credential !== undefined) {
+        options.on_login_credential(instance.id, credential);
+      }
+    }
+    return instance;
   }
 
   async editInstance(id: string, input: EditInstanceInput): Promise<Instance> {
@@ -341,6 +357,21 @@ export class VultrProvider implements Provider {
       seen_cursors.add(next_cursor);
       cursor = next_cursor;
     }
+  }
+}
+
+function createdInstanceCredential(
+  response: unknown,
+): InstanceLoginCredential | undefined {
+  const result = z
+    .object({ instance: instance_login_credential_schema })
+    .safeParse(response);
+  if (!result.success) return undefined;
+  try {
+    return normalizeInstanceLoginCredential(result.data.instance);
+  } catch {
+    // Credential capture must not turn a successful deployment into a failure.
+    return undefined;
   }
 }
 

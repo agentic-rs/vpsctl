@@ -18,6 +18,7 @@ import { sanitizeTerminalText } from "./output.ts";
 
 interface LoginOptions extends CommonOptions {
   auth?: "provider" | "ctl";
+  refresh_password?: boolean;
   user?: string;
   port?: number;
   identity_file?: string;
@@ -50,8 +51,7 @@ function requireDirectPasswordMethod(method: CtlMethod): void {
 async function loginCredential(
   provider: Provider,
   instance: Instance,
-  requested_user?: string,
-): Promise<InstanceLoginCredential> {
+): Promise<InstanceLoginCredential | undefined> {
   let credential: InstanceLoginCredential | undefined;
   try {
     credential = await provider.getInstanceLoginCredential?.(instance.id);
@@ -62,16 +62,18 @@ async function loginCredential(
       error instanceof AppError ? error.status_code : undefined,
     );
   }
-  if (credential === undefined) {
-    throw new AppError(
-      "not_found",
-      "The provider password is unavailable or has expired. Use --auth ctl to choose ctl-managed authentication instead.",
-    );
-  }
+  return credential;
+}
+
+function validateLoginCredential(
+  credential: InstanceLoginCredential,
+  instance: Instance,
+  requested_user?: string,
+): void {
   if (
     typeof credential !== "object" ||
     credential === null ||
-    typeof credential.user !== "string"
+    (credential.user !== undefined && typeof credential.user !== "string")
   ) {
     throw new AppError(
       "invalid_response",
@@ -80,7 +82,7 @@ async function loginCredential(
   }
   validateSshPassword(credential.password);
   try {
-    validateSshUser(credential.user);
+    if (credential.user !== undefined) validateSshUser(credential.user);
   } catch {
     throw new AppError(
       "invalid_response",
@@ -88,15 +90,23 @@ async function loginCredential(
     );
   }
   if (
-    (requested_user !== undefined && requested_user !== credential.user) ||
-    (instance.ssh_user !== undefined && instance.ssh_user !== credential.user)
+    credential.user !== undefined &&
+    ((requested_user !== undefined && requested_user !== credential.user) ||
+      (instance.ssh_user !== undefined &&
+        instance.ssh_user !== credential.user))
   ) {
     throw new AppError(
       "invalid_input",
       "The provider password belongs to a different SSH username. Use the provider credential's username for password login.",
     );
   }
-  return credential;
+}
+
+function passwordInstructions(provider: Provider): string {
+  const help = provider.info.instance_password_help;
+  return help
+    ? `Retrieve this instance's password at ${sanitizeTerminalText(help.url)}\n${sanitizeTerminalText(help.instructions)}`
+    : "Open this instance's Overview page in the provider website and retrieve its login password.";
 }
 
 function sshPort(value: string): number {
@@ -239,8 +249,12 @@ export function registerInstanceLoginCommand(
     .option("--user <user>", "Override the SSH username", validateSshUser)
     .option(
       "--auth <method>",
-      "provider password when supported, or ctl-managed authentication",
+      "Saved/API password when supported, or ctl-managed authentication",
       authMethod,
+    )
+    .option(
+      "--refresh-password",
+      "Replace the saved password through a masked terminal prompt",
     )
     .option("--port <port>", "Override the SSH port", sshPort)
     .option(
@@ -253,6 +267,22 @@ export function registerInstanceLoginCommand(
     );
   login.action(async (selector?: string) => {
     const flags = login.optsWithGlobals<LoginOptions>();
+    if (flags.refresh_password && flags.auth === "ctl") {
+      throw new AppError(
+        "invalid_input",
+        "--refresh-password requires provider-password authentication.",
+      );
+    }
+    if (
+      flags.refresh_password &&
+      !flags.dry_run &&
+      (!context.io.is_interactive || !context.io.read_secret || flags.json)
+    ) {
+      throw new AppError(
+        "invalid_input",
+        "--refresh-password requires an interactive terminal with masked input.",
+      );
+    }
     if (flags.json && !flags.dry_run)
       throw new AppError(
         "invalid_input",
@@ -275,7 +305,10 @@ export function registerInstanceLoginCommand(
     const { account, display_id } = await context.selectedAccount(login);
     const provider = context.registry.connect(account, context.env);
     const auth =
-      flags.auth ?? (provider.getInstanceLoginCredential ? "provider" : "ctl");
+      flags.auth ??
+      (flags.refresh_password || provider.getInstanceLoginCredential
+        ? "provider"
+        : "ctl");
     if (auth === "provider" && !provider.getInstanceLoginCredential) {
       throw new AppError(
         "unsupported_operation",
@@ -311,11 +344,33 @@ export function registerInstanceLoginCommand(
       );
     const existing = hosts[0];
     const method = existing === undefined ? undefined : managedMethod(existing);
-    const credential =
-      !flags.dry_run && auth === "provider"
-        ? await loginCredential(provider, instance, flags.user)
-        : undefined;
-    if (credential && method) requireDirectPasswordMethod(method);
+    const credential_key = {
+      provider_id: account.provider_id,
+      account_id: account.id,
+      instance_id: instance.id,
+    };
+    let credential: InstanceLoginCredential | undefined;
+    let from_store = false;
+    if (!flags.dry_run && auth === "provider") {
+      if (method) requireDirectPasswordMethod(method);
+      if (!flags.refresh_password) {
+        credential = await context
+          .credentialStoreFor(login)
+          .get(credential_key);
+        from_store = credential !== undefined;
+        credential ??= await loginCredential(provider, instance);
+      }
+      if (credential !== undefined)
+        validateLoginCredential(credential, instance, flags.user);
+      else if (!context.io.is_interactive || !context.io.read_secret) {
+        throw new AppError(
+          "not_found",
+          `No saved password is available and the provider did not return one. ${passwordInstructions(provider)}\nRun instance login in an interactive terminal to enter and save it, or use --auth ctl for ctl-managed authentication.`,
+        );
+      } else {
+        context.io.write_err(`${passwordInstructions(provider)}\n`);
+      }
+    }
     let user =
       flags.user ??
       credential?.user ??
@@ -350,6 +405,27 @@ export function registerInstanceLoginCommand(
         method?.target.port ??
         preliminary.port,
     });
+    if (!flags.dry_run && auth === "provider") {
+      if (credential === undefined) {
+        const password = await context.io.read_secret?.(
+          `Instance password for ${sanitizeTerminalText(user)} (saved locally)`,
+        );
+        try {
+          credential = { user, password: validateSshPassword(password) };
+        } catch {
+          throw new AppError(
+            "invalid_input",
+            "Enter a nonempty instance password without control characters, up to 4096 bytes.",
+          );
+        }
+      }
+      if (!from_store || credential.user !== user) {
+        await context.credentialStoreFor(login).set(credential_key, {
+          user,
+          password: credential.password,
+        });
+      }
+    }
     const input: CtlHostInput = {
       name,
       destination: connection.host,

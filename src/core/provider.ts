@@ -34,7 +34,7 @@ export interface Instance {
 }
 
 export interface InstanceLoginCredential {
-  user: string;
+  user?: string;
   password: string;
 }
 
@@ -118,6 +118,13 @@ export interface CreateInstanceInput {
   enable_ipv6?: boolean;
 }
 
+export interface CreateInstanceOptions {
+  on_login_credential?(
+    instance_id: string,
+    credential: InstanceLoginCredential,
+  ): void;
+}
+
 export interface EditInstanceInput {
   label?: string;
   tags?: string[];
@@ -129,6 +136,10 @@ export interface ProviderInfo {
   name: string;
   capabilities: readonly string[];
   operation_notes?: Partial<Record<InstanceAction, string>>;
+  instance_password_help?: {
+    url: string;
+    instructions: string;
+  };
 }
 
 export interface OfferQuery {
@@ -206,7 +217,10 @@ export interface Provider {
   getInstanceLoginCredential?(
     id: string,
   ): Promise<InstanceLoginCredential | undefined>;
-  createInstance(input: CreateInstanceInput): Promise<InstanceMutationResult>;
+  createInstance(
+    input: CreateInstanceInput,
+    options?: CreateInstanceOptions,
+  ): Promise<InstanceMutationResult>;
   editInstance(
     id: string,
     input: EditInstanceInput,

@@ -3,6 +3,7 @@ import { AppError } from "../src/core/errors.ts";
 import type {
   CreateInstanceInput,
   EditInstanceInput,
+  InstanceLoginCredential,
   MachineQuery,
 } from "../src/core/provider.ts";
 import { VultrProvider } from "../src/providers/vultr/index.ts";
@@ -362,6 +363,19 @@ describe("Vultr instance login credentials", () => {
     });
   });
 
+  test.each([undefined, "unknown-scheme"])(
+    "retains a password without inventing a username for scheme %j",
+    async (user_scheme) => {
+      const { provider } = harness([
+        json({ instance: instance({ os: "Ubuntu 24.04 x64", user_scheme }) }),
+      ]);
+
+      expect(await provider.getInstanceLoginCredential("instance-1")).toEqual({
+        password: "private-password",
+      });
+    },
+  );
+
   test.each([undefined, null, ""])(
     "returns no credential when the provider omits or expires the password: %j",
     async (default_password) => {
@@ -378,10 +392,8 @@ describe("Vultr instance login credentials", () => {
   test.each([
     { os: "Windows 2025 Standard", user_scheme: "root" },
     { os: "Windows Server 2022", user_scheme: "limited" },
-    { os: "Ubuntu 24.04 x64" },
-    { os: "Ubuntu 24.04 x64", user_scheme: "unknown-scheme" },
   ])(
-    "does not assign a password to an unsupported or unknown login user: %j",
+    "does not expose Windows credentials for SSH login: %j",
     async (metadata) => {
       const { provider } = harness([json({ instance: instance(metadata) })]);
 
@@ -396,6 +408,7 @@ describe("Vultr instance login credentials", () => {
     "secret\rvalue",
     "secret\0value",
     "secret\tvalue",
+    "secret\u200bvalue",
     123,
   ])(
     "rejects a malformed credential without including its value: %j",
@@ -411,6 +424,23 @@ describe("Vultr instance login credentials", () => {
       expect(String(error)).not.toContain("secret");
     },
   );
+
+  test("rejects an oversized login password without including its value", async () => {
+    const { provider } = harness([
+      json({
+        instance: instance({
+          user_scheme: "root",
+          default_password: "secret".repeat(1000),
+        }),
+      }),
+    ]);
+    const error = await provider
+      .getInstanceLoginCredential("instance-1")
+      .catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ code: "invalid_response" });
+    expect(String(error)).not.toContain("secret");
+  });
 
   test("rejects credentials returned for a different instance", async () => {
     const { provider } = harness([
@@ -501,6 +531,125 @@ describe("Vultr instance login credentials", () => {
     expect(JSON.stringify(results)).not.toContain("default_password");
     expect(JSON.stringify(results)).not.toContain("private-password");
     expect(JSON.stringify(results)).not.toContain("user_scheme");
+  });
+
+  test.each([
+    { user_scheme: "root", user: "root" },
+    { user_scheme: "limited", user: "linuxuser" },
+    { user_scheme: undefined, user: undefined },
+    { user_scheme: "unknown-scheme", user: undefined },
+  ])(
+    "captures a validated deployment password from the create response for scheme $user_scheme",
+    async ({ user_scheme, user }) => {
+      const password = "creation-only-password";
+      const { provider, requests } = harness([
+        json(
+          {
+            instance: instance({
+              os: "Ubuntu 24.04 x64",
+              user_scheme,
+              default_password: password,
+            }),
+          },
+          202,
+        ),
+      ]);
+      const captured: {
+        instance_id: string;
+        credential: InstanceLoginCredential;
+      }[] = [];
+      let returned = false;
+
+      const result = await provider.createInstance(create_input, {
+        on_login_credential: (instance_id, credential) => {
+          expect(returned).toBe(false);
+          captured.push({ instance_id, credential });
+        },
+      });
+      returned = true;
+
+      expect(captured).toEqual([
+        {
+          instance_id: "instance-1",
+          credential: user === undefined ? { password } : { user, password },
+        },
+      ]);
+      expect(result.id).toBe("instance-1");
+      expect(JSON.stringify(result)).not.toContain(password);
+      expect(JSON.stringify(result)).not.toContain("default_password");
+      expect(JSON.stringify(provider)).not.toContain(password);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.method).toBe("POST");
+      expect(await requests[0]?.json()).toEqual({
+        region: "nrt",
+        plan: "vc2-1c-1gb",
+        os_id: 1743,
+      });
+    },
+  );
+
+  test.each([
+    { name: "missing password", overrides: { default_password: undefined } },
+    { name: "null password", overrides: { default_password: null } },
+    { name: "empty password", overrides: { default_password: "" } },
+    {
+      name: "control characters",
+      overrides: { default_password: "secret\nvalue" },
+    },
+    {
+      name: "format characters",
+      overrides: { default_password: "secret\u200bvalue" },
+    },
+    {
+      name: "oversized password",
+      overrides: { default_password: "secret".repeat(1000) },
+    },
+    { name: "invalid password type", overrides: { default_password: 123 } },
+    { name: "Windows", overrides: { os: "Windows Server 2022" } },
+    { name: "invalid OS metadata", overrides: { os: 123 } },
+    { name: "invalid user metadata", overrides: { user_scheme: 123 } },
+  ])(
+    "preserves a successful deployment without password capture: $name",
+    async ({ overrides }) => {
+      const { provider, requests } = harness([
+        json(
+          { instance: instance({ user_scheme: "root", ...overrides }) },
+          202,
+        ),
+      ]);
+      const captured: InstanceLoginCredential[] = [];
+
+      const result = await provider.createInstance(create_input, {
+        on_login_credential: (_instance_id, credential) => {
+          captured.push(credential);
+        },
+      });
+
+      expect(result.id).toBe("instance-1");
+      expect(captured).toEqual([]);
+      expect(requests).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain("password");
+      expect(JSON.stringify(result)).not.toContain("secret");
+    },
+  );
+
+  test("validates the ordinary creation response before exposing a password", async () => {
+    const { provider } = harness([
+      json({ instance: instance({ region: null, user_scheme: "root" }) }, 202),
+    ]);
+    const captured: InstanceLoginCredential[] = [];
+    const error = await provider
+      .createInstance(create_input, {
+        on_login_credential: (_instance_id, credential) => {
+          captured.push(credential);
+        },
+      })
+      .catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ code: "invalid_response" });
+    expect(String(error)).toContain("may have succeeded");
+    expect(String(error)).not.toContain("private-password");
+    expect(captured).toEqual([]);
   });
 });
 

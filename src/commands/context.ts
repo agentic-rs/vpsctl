@@ -1,5 +1,6 @@
 import type { Account, AccountStore } from "../core/accounts.ts";
 import type { CtlClient } from "../core/ctl.ts";
+import type { InstanceCredentialStore } from "../core/instance-credentials.ts";
 import type {
   CreateInstanceInput,
   EditInstanceInput,
@@ -98,6 +99,7 @@ export interface CommandContext {
   registry: ProviderRegistry;
   ctl: CtlClient;
   storeFor(command: CliCommand): AccountStore;
+  credentialStoreFor(command: CliCommand): InstanceCredentialStore;
   selectedAccount(
     command: CliCommand,
     allow_prompt?: boolean,

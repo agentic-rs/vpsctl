@@ -8,9 +8,14 @@ import {
 } from "../core/accounts.ts";
 import { createCtlClient } from "../core/ctl.ts";
 import { AppError } from "../core/errors.ts";
+import {
+  InstanceCredentialStore,
+  instanceCredentialPath,
+} from "../core/instance-credentials.ts";
 import type {
   CreateInstanceInput,
   InstanceAction,
+  InstanceLoginCredential,
   Provider,
 } from "../core/provider.ts";
 import { ProviderRegistry } from "../core/registry.ts";
@@ -27,11 +32,19 @@ import { registerCredentialCommands } from "./credential.ts";
 import { nonblank } from "./input.ts";
 import { registerInstanceCommands } from "./instances.ts";
 import { default_io } from "./io.ts";
-import { render } from "./output.ts";
+import { render, sanitizeTerminalText } from "./output.ts";
 import { registerProviderCommands } from "./provider.ts";
 import { registerSpecCommands } from "./spec.ts";
 
 export type { CliIO, CliOptions } from "./context.ts";
+
+function creationPasswordWarning(provider: Provider): string {
+  const help = provider.info.instance_password_help;
+  const guidance = help
+    ? `Retrieve it from the provider website at ${sanitizeTerminalText(help.url)}. ${sanitizeTerminalText(help.instructions)}`
+    : "Retrieve it from this instance's Overview page on the provider website.";
+  return `The instance was created, but its login password could not be saved. ${guidance} Run instance login in an interactive terminal to enter and save it.`;
+}
 
 export async function runCli(
   argv: string[],
@@ -56,11 +69,15 @@ export async function runCli(
 
   const flagsFor = (command: CliCommand): CommonOptions =>
     command.optsWithGlobals<CommonOptions>();
-  const storeFor = (command: CliCommand): AccountStore => {
+  const configPathFor = (command: CliCommand): string => {
     const path = flagsFor(command).config ?? defaultConfigPath(env);
     nonblank(path, "Config path");
-    return new AccountStore(path);
+    return path;
   };
+  const storeFor = (command: CliCommand): AccountStore =>
+    new AccountStore(configPathFor(command));
+  const credentialStoreFor = (command: CliCommand): InstanceCredentialStore =>
+    new InstanceCredentialStore(instanceCredentialPath(configPathFor(command)));
   const selectedAccount = async (
     command: CliCommand,
     allow_prompt = true,
@@ -235,10 +252,62 @@ export async function runCli(
       }
     }
     const provider = prepared_provider ?? registry.connect(account, env);
-    const data =
-      mutation.action === "instance.create"
-        ? await provider.createInstance(create_input ?? mutation.input)
-        : await mutation.execute(provider);
+    let data: unknown;
+    let credential_warning: string | undefined;
+    if (mutation.action === "instance.create") {
+      let captured:
+        | { instance_id: string; credential: InstanceLoginCredential }
+        | undefined;
+      const created = await provider.createInstance(
+        create_input ?? mutation.input,
+        {
+          on_login_credential(instance_id, credential) {
+            captured = { instance_id, credential };
+          },
+        },
+      );
+      data = created;
+      try {
+        if (created.provider_id !== account.provider_id) {
+          throw new AppError(
+            "invalid_response",
+            "The created instance belongs to a different provider.",
+          );
+        }
+        const credential =
+          captured?.instance_id === created.id
+            ? captured.credential
+            : await provider.getInstanceLoginCredential?.(created.id);
+        if (credential !== undefined) {
+          await credentialStoreFor(command).set(
+            {
+              provider_id: account.provider_id,
+              account_id: account.id,
+              instance_id: created.id,
+            },
+            credential,
+          );
+        } else if (provider.getInstanceLoginCredential !== undefined) {
+          credential_warning = creationPasswordWarning(provider);
+        }
+      } catch {
+        credential_warning = creationPasswordWarning(provider);
+      }
+    } else {
+      data = await mutation.execute(provider);
+      if (mutation.action === "instance.destroy") {
+        try {
+          await credentialStoreFor(command).remove({
+            provider_id: account.provider_id,
+            account_id: account.id,
+            instance_id: mutation.instance_id,
+          });
+        } catch {
+          credential_warning =
+            "The instance was destroyed, but its saved login password could not be removed.";
+        }
+      }
+    }
     print(
       command,
       mutation.action,
@@ -246,6 +315,9 @@ export async function runCli(
       account,
       display_id,
     );
+    if (credential_warning !== undefined) {
+      io.write_err(`Warning: ${credential_warning}\n`);
+    }
   };
   const mutationFlags = (command: CliCommand): CliCommand =>
     command
@@ -258,6 +330,7 @@ export async function runCli(
     registry,
     ctl: options.ctl ?? createCtlClient(env),
     storeFor,
+    credentialStoreFor,
     selectedAccount,
     print,
     readProvider,

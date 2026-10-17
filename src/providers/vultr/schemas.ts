@@ -12,6 +12,7 @@ import type {
   Region,
   SshKey,
 } from "../../core/provider.ts";
+import { validateSshPassword } from "../../core/ssh-password.ts";
 
 export const identifier_schema = z
   .string()
@@ -89,9 +90,8 @@ export function normalizeInstanceLoginCredential(
       : value.user_scheme === "limited"
         ? "linuxuser"
         : undefined;
-  return user === undefined
-    ? undefined
-    : { user, password: value.default_password };
+  const password = validateSshPassword(value.default_password);
+  return user === undefined ? { password } : { user, password };
 }
 
 export const region_schema = z.object({

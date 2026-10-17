@@ -11,6 +11,10 @@ import { type CliIO, runCli } from "../src/commands/program.ts";
 import { AccountStore } from "../src/core/accounts.ts";
 import type { CtlClient, CtlHost } from "../src/core/ctl.ts";
 import { AppError } from "../src/core/errors.ts";
+import {
+  InstanceCredentialStore,
+  instanceCredentialPath,
+} from "../src/core/instance-credentials.ts";
 import type {
   Instance,
   InstanceLoginCredential,
@@ -40,6 +44,7 @@ interface RunOptions {
   selections?: Record<string, string>;
   cancel_prompt?: string;
   username?: string;
+  password?: string;
 }
 
 const temp_dirs: string[] = [];
@@ -109,6 +114,8 @@ async function fixture(
   const temp_dir = await mkdtemp(join(tmpdir(), "vpsctl-instance-login-"));
   temp_dirs.push(temp_dir);
   const config_path = join(temp_dir, "config.json");
+  const credential_path = instanceCredentialPath(config_path);
+  const credential_store = new InstanceCredentialStore(credential_path);
   const store = new AccountStore(config_path);
   for (const id of [account_id, second_account_id]) {
     await store.add({
@@ -133,6 +140,11 @@ async function fixture(
     id: provider_id,
     name: "Example provider",
     capabilities: ["instances"],
+    instance_password_help: {
+      url: "https://console.vultr.com/",
+      instructions:
+        "Open Compute, select this instance, then Overview → View Root Password.",
+    },
   };
   const unexpected = async (): Promise<never> => {
     throw new Error("Unexpected provider mutation.");
@@ -260,6 +272,7 @@ async function fixture(
     const output: string[] = [];
     const errors: string[] = [];
     const text_prompts: string[] = [];
+    const secret_prompts: string[] = [];
     const prompts: {
       message: string;
       options: PromptOption[];
@@ -272,10 +285,13 @@ async function fixture(
       async confirm() {
         throw new Error("Unexpected confirmation prompt.");
       },
-      async read_secret() {
-        throw new Error(
-          "Provider credentials must not be prompted for SSH login.",
-        );
+      async read_secret(message) {
+        secret_prompts.push(message);
+        if (message === options.cancel_prompt)
+          throw new AppError("cancelled", "Operation cancelled.");
+        if (options.password === undefined)
+          throw new Error("Unexpected instance password prompt.");
+        return options.password;
       },
       async read_text(message) {
         text_prompts.push(message);
@@ -306,12 +322,15 @@ async function fixture(
       stderr: errors.join(""),
       prompts,
       text_prompts,
+      secret_prompts,
     };
   };
   return {
     run,
     store,
     config_path,
+    credential_path,
+    credential_store,
     inventory,
     hosts,
     ctl,
@@ -341,6 +360,198 @@ afterEach(async () => {
 });
 
 describe("instance login through ctl", () => {
+  const credential_key = {
+    provider_id: "vultr",
+    account_id,
+    instance_id: "instance-example",
+  };
+
+  test("saves a retrieved API password for future logins without another credential request", async () => {
+    const f = await fixture();
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+    expect((await f.run(["instance-example"])).exit_code).toBe(0);
+    expect(await f.credential_store.get(credential_key)).toEqual({
+      user: "root",
+      password: synthetic_password,
+    });
+    f.provider_calls.splice(0);
+    f.fail.set("credential", new Error("Unexpected API password request."));
+
+    const result = await f.run(["instance-example"]);
+
+    expect(result.exit_code).toBe(0);
+    expect(f.provider_calls).not.toContain("credential:instance-example");
+    expect(result.secret_prompts).toEqual([]);
+    expect(f.ctl_calls.at(-1)?.authentication?.password).toBe(
+      synthetic_password,
+    );
+    expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+  });
+
+  test("shows website instructions, saves masked input, and reuses it on the next login", async () => {
+    const f = await fixture();
+    f.setLoginCredential(undefined);
+    const password = "  synthetic $'\\\" 密碼  ";
+
+    const result = await f.run(["instance-example"], {
+      interactive: true,
+      password,
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(result.stderr).toContain("https://console.vultr.com/");
+    expect(result.stderr).toContain("View Root Password");
+    expect(result.secret_prompts).toEqual([
+      "Instance password for root (saved locally)",
+    ]);
+    expect(await f.credential_store.get(credential_key)).toEqual({
+      user: "root",
+      password,
+    });
+    expect(f.ctl_calls.at(-1)?.authentication?.password).toBe(password);
+    expect(
+      result.stdout + result.stderr + JSON.stringify(f.hosts),
+    ).not.toContain(password);
+
+    f.provider_calls.splice(0);
+    const next = await f.run(["instance-example"]);
+    expect(next.exit_code).toBe(0);
+    expect(next.secret_prompts).toEqual([]);
+    expect(f.provider_calls).not.toContain("credential:instance-example");
+  });
+
+  test("does not retain a cancelled password prompt or create a ctl host", async () => {
+    const f = await fixture();
+    f.setLoginCredential(undefined);
+    const result = await f.run(["instance-example"], {
+      interactive: true,
+      cancel_prompt: "Instance password for root (saved locally)",
+    });
+    expect(result.exit_code).toBe(130);
+    expect(await f.credential_store.get(credential_key)).toBeUndefined();
+    expect(f.ctl_calls).toEqual([{ action: "list" }]);
+  });
+
+  test("refreshes a saved password through masked input without another API retrieval", async () => {
+    const f = await fixture();
+    f.setLoginCredential(undefined);
+    await f.credential_store.set(credential_key, {
+      user: "root",
+      password: "synthetic-old-password",
+    });
+
+    const result = await f.run(["instance-example", "--refresh-password"], {
+      interactive: true,
+      password: synthetic_password,
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(f.provider_calls).not.toContain("credential:instance-example");
+    expect(await f.credential_store.get(credential_key)).toEqual({
+      user: "root",
+      password: synthetic_password,
+    });
+    expect(f.ctl_calls.at(-1)?.authentication?.password).toBe(
+      synthetic_password,
+    );
+  });
+
+  test("preserves the previous password when refreshing is cancelled", async () => {
+    const f = await fixture();
+    f.setLoginCredential(undefined);
+    const previous = { user: "root", password: "synthetic-previous-password" };
+    await f.credential_store.set(credential_key, previous);
+    const result = await f.run(["instance-example", "--refresh-password"], {
+      interactive: true,
+      cancel_prompt: "Instance password for root (saved locally)",
+    });
+    expect(result.exit_code).toBe(130);
+    expect(await f.credential_store.get(credential_key)).toEqual(previous);
+    expect(f.provider_calls).not.toContain("credential:instance-example");
+    expect(f.ctl_calls).toEqual([{ action: "list" }]);
+  });
+
+  test("rejects invalid masked input without saving or exposing it", async () => {
+    const f = await fixture();
+    f.setLoginCredential(undefined);
+    const password = `${synthetic_password}\nextra`;
+    const result = await f.run(["instance-example"], {
+      interactive: true,
+      password,
+    });
+    expect(result.exit_code).toBe(1);
+    expect(result.stderr).toContain("Enter a nonempty instance password");
+    expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+    expect(await f.credential_store.get(credential_key)).toBeUndefined();
+    expect(f.ctl_calls).toEqual([{ action: "list" }]);
+  });
+
+  test("rejects noninteractive or ctl-managed password refresh before remote calls", async () => {
+    for (const args of [
+      ["--refresh-password"],
+      ["--refresh-password", "--auth", "ctl"],
+    ]) {
+      const f = await fixture();
+      const result = await f.run(["instance-example", ...args]);
+      expect(result.exit_code).toBe(1);
+      expect(result.secret_prompts).toEqual([]);
+      expect(f.provider_calls).toEqual([]);
+      expect(f.ctl_calls).toEqual([]);
+    }
+  });
+
+  test("dry-run and explicit ctl authentication skip the password store and prompts", async () => {
+    const f = await fixture();
+    f.setLoginCredential(undefined);
+    await Bun.write(f.credential_path, "malformed local credentials");
+    for (const args of [
+      ["--dry-run", "--refresh-password"],
+      ["--dry-run", "--json"],
+      ["--auth", "ctl"],
+    ]) {
+      const result = await f.run(["instance-example", ...args]);
+      expect(result.exit_code).toBe(0);
+      expect(result.secret_prompts).toEqual([]);
+      expect(f.provider_calls).not.toContain("credential:instance-example");
+    }
+    expect(await Bun.file(f.credential_path).text()).toBe(
+      "malformed local credentials",
+    );
+  });
+
+  test("allows an explicit username when the API returned a password without user metadata", async () => {
+    const f = await fixture();
+    const fresh = instance();
+    delete fresh.ssh_user;
+    f.setFresh(fresh);
+    f.setLoginCredential({ password: synthetic_password });
+    const result = await f.run(["instance-example", "--user", "linuxuser"]);
+    expect(result.exit_code).toBe(0);
+    expect(result.secret_prompts).toEqual([]);
+    expect(await f.credential_store.get(credential_key)).toEqual({
+      user: "linuxuser",
+      password: synthetic_password,
+    });
+    expect(f.ctl_calls.at(-1)?.authentication?.user).toBe("linuxuser");
+  });
+
+  test("keeps saved credentials isolated between accounts", async () => {
+    const f = await fixture();
+    f.setLoginCredential(undefined);
+    await f.credential_store.set(credential_key, {
+      user: "root",
+      password: synthetic_password,
+    });
+    const result = await f.run([
+      "instance-example",
+      "--account",
+      second_account_id,
+    ]);
+    expect(result.exit_code).toBe(1);
+    expect(f.ctl_calls).toEqual([{ action: "list" }]);
+    expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+  });
+
   test("creates a managed host from fresh provider details before connecting", async () => {
     const f = await fixture();
     f.setFresh(instance({ public_ipv4: "192.0.2.20" }));
