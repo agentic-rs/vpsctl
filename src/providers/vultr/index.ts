@@ -8,6 +8,7 @@ import type {
   Image,
   Instance,
   InstanceListOptions,
+  InstanceLoginCredential,
   MachineOffer,
   MachineQuery,
   Plan,
@@ -30,10 +31,12 @@ import {
   editBody,
   identifier_schema,
   image_schema,
+  instance_login_credential_schema,
   instance_schema,
   normalizeAccountMetadata,
   normalizeImage,
   normalizeInstance,
+  normalizeInstanceLoginCredential,
   normalizePlan,
   normalizeRegion,
   normalizeSshKey,
@@ -147,6 +150,33 @@ export class VultrProvider implements Provider {
   async getInstance(id: string): Promise<Instance> {
     const response = await this.#transport.request(instancePath(id));
     return instanceResponse(response);
+  }
+
+  async getInstanceLoginCredential(
+    id: string,
+  ): Promise<InstanceLoginCredential | undefined> {
+    const path = instancePath(id);
+    let response: unknown;
+    try {
+      response = await this.#transport.request(path);
+    } catch (error) {
+      throw new AppError(
+        error instanceof AppError ? error.code : "provider_error",
+        "Unable to retrieve the instance login credential from Vultr.",
+        error instanceof AppError ? error.status_code : undefined,
+      );
+    }
+    const result = validateResponse(
+      z.object({ instance: instance_login_credential_schema }),
+      response,
+    );
+    if (result.instance.id !== id) {
+      throw new AppError(
+        "invalid_response",
+        "Vultr returned login credentials for a different instance.",
+      );
+    }
+    return normalizeInstanceLoginCredential(result.instance);
   }
 
   async createInstance(input: CreateInstanceInput): Promise<Instance> {

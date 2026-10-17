@@ -6,6 +6,7 @@ import type {
   EditInstanceInput,
   Image,
   Instance,
+  InstanceLoginCredential,
   InstanceStatus,
   Plan,
   Region,
@@ -65,6 +66,33 @@ export const instance_schema = z.object({
   v6_main_ip: z.string().optional().default(""),
   tags: z.array(z.string()).optional().default([]),
 });
+
+export const instance_login_credential_schema = z.object({
+  id: z.string().min(1),
+  os: z.string().optional(),
+  user_scheme: z.string().optional(),
+  default_password: z
+    .string()
+    .regex(/^[^\p{Cc}]*$/u)
+    .nullish(),
+});
+
+export function normalizeInstanceLoginCredential(
+  value: z.infer<typeof instance_login_credential_schema>,
+): InstanceLoginCredential | undefined {
+  if (!value.default_password || /\bwindows\b/i.test(value.os ?? "")) {
+    return undefined;
+  }
+  const user =
+    value.user_scheme === "root"
+      ? "root"
+      : value.user_scheme === "limited"
+        ? "linuxuser"
+        : undefined;
+  return user === undefined
+    ? undefined
+    : { user, password: value.default_password };
+}
 
 export const region_schema = z.object({
   id: z.string().min(1),

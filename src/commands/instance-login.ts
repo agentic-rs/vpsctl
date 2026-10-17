@@ -4,17 +4,99 @@ import { resolve } from "node:path";
 import type { Account } from "../core/accounts.ts";
 import type { CtlHost, CtlHostInput, CtlMethod } from "../core/ctl.ts";
 import { AppError } from "../core/errors.ts";
-import type { Instance, Provider } from "../core/provider.ts";
+import type {
+  Instance,
+  InstanceLoginCredential,
+  Provider,
+} from "../core/provider.ts";
 import { resolveSshConnection, validateSshUser } from "../core/ssh.ts";
+import { validateSshPassword } from "../core/ssh-password.ts";
 import type { CliCommand } from "./command.ts";
 import type { CommandContext, CommonOptions } from "./context.ts";
 import { nonblank, positiveInteger } from "./input.ts";
 import { sanitizeTerminalText } from "./output.ts";
 
 interface LoginOptions extends CommonOptions {
+  auth?: "provider" | "ctl";
   user?: string;
   port?: number;
   identity_file?: string;
+}
+
+function authMethod(value: string): "provider" | "ctl" {
+  if (value !== "provider" && value !== "ctl") {
+    throw new AppError(
+      "invalid_input",
+      "Authentication must be provider or ctl.",
+    );
+  }
+  return value;
+}
+
+function requireDirectPasswordMethod(method: CtlMethod): void {
+  const target = method.target;
+  if (
+    target.vpn_connection_id ||
+    (Array.isArray(target.gateway_route) && target.gateway_route.length) ||
+    (Array.isArray(target.gateways) && target.gateways.length)
+  ) {
+    throw new AppError(
+      "unsupported_operation",
+      "Provider-password login requires a direct ctl connection method. Use --auth ctl for saved gateway or VPN routes.",
+    );
+  }
+}
+
+async function loginCredential(
+  provider: Provider,
+  instance: Instance,
+  requested_user?: string,
+): Promise<InstanceLoginCredential> {
+  let credential: InstanceLoginCredential | undefined;
+  try {
+    credential = await provider.getInstanceLoginCredential?.(instance.id);
+  } catch (error) {
+    throw new AppError(
+      error instanceof AppError ? error.code : "provider_error",
+      "Unable to retrieve the instance login credential from the provider.",
+      error instanceof AppError ? error.status_code : undefined,
+    );
+  }
+  if (credential === undefined) {
+    throw new AppError(
+      "not_found",
+      "The provider password is unavailable or has expired. Use --auth ctl to choose ctl-managed authentication instead.",
+    );
+  }
+  if (
+    typeof credential !== "object" ||
+    credential === null ||
+    typeof credential.user !== "string"
+  ) {
+    throw new AppError(
+      "invalid_response",
+      "The provider returned an invalid instance login credential.",
+    );
+  }
+  validateSshPassword(credential.password);
+  try {
+    validateSshUser(credential.user);
+  } catch {
+    throw new AppError(
+      "invalid_response",
+      "The provider returned an invalid instance login credential.",
+    );
+  }
+  if (
+    (requested_user !== undefined && requested_user !== credential.user) ||
+    (instance.ssh_user !== undefined && instance.ssh_user !== credential.user)
+  ) {
+    throw new AppError(
+      "invalid_input",
+      "The provider password belongs to a different SSH username. Use the provider credential's username for password login.",
+    );
+  }
+  return credential;
 }
 
 function sshPort(value: string): number {
@@ -155,6 +237,11 @@ export function registerInstanceLoginCommand(
       "Refresh a saved ctl host from an instance and open its SSH session",
     )
     .option("--user <user>", "Override the SSH username", validateSshUser)
+    .option(
+      "--auth <method>",
+      "provider password when supported, or ctl-managed authentication",
+      authMethod,
+    )
     .option("--port <port>", "Override the SSH port", sshPort)
     .option(
       "-i, --identity-file <path>",
@@ -187,6 +274,14 @@ export function registerInstanceLoginCommand(
         : identityPath(flags.identity_file, context.env);
     const { account, display_id } = await context.selectedAccount(login);
     const provider = context.registry.connect(account, context.env);
+    const auth =
+      flags.auth ?? (provider.getInstanceLoginCredential ? "provider" : "ctl");
+    if (auth === "provider" && !provider.getInstanceLoginCredential) {
+      throw new AppError(
+        "unsupported_operation",
+        "This provider does not expose instance passwords. Use --auth ctl for SSH key or interactive authentication.",
+      );
+    }
     const chosen = await selectInstance(selector, provider, context);
     context.registry.get(account.provider_id).validateInstanceId?.(chosen.id);
     const instance = await provider.getInstance(chosen.id);
@@ -216,8 +311,14 @@ export function registerInstanceLoginCommand(
       );
     const existing = hosts[0];
     const method = existing === undefined ? undefined : managedMethod(existing);
+    const credential =
+      !flags.dry_run && auth === "provider"
+        ? await loginCredential(provider, instance, flags.user)
+        : undefined;
+    if (credential && method) requireDirectPasswordMethod(method);
     let user =
       flags.user ??
+      credential?.user ??
       instance.ssh_user ??
       method?.target.user ??
       preliminary.user;
@@ -262,6 +363,7 @@ export function registerInstanceLoginCommand(
         "instance.login",
         {
           instance_id: instance.id,
+          auth_method: auth,
           host_name: name,
           operation: existing ? "update" : "create",
           connection,
@@ -299,11 +401,18 @@ export function registerInstanceLoginCommand(
         "ctl did not save the expected instance connection. Inspect the saved host before retrying.",
       );
     }
+    if (credential) requireDirectPasswordMethod(saved_method);
     context.io.write_err(
       `Connecting to ${sanitizeTerminalText(instance.label || instance.id)} via ctl (${sanitizeTerminalText(display_id)}).\n`,
     );
     context.setExitCode(
-      await context.ctl.connect(saved.host_id, saved_method.method_id),
+      await context.ctl.connect(
+        saved.host_id,
+        saved_method.method_id,
+        credential === undefined
+          ? undefined
+          : { ...connection, user, password: credential.password },
+      ),
     );
   });
 }

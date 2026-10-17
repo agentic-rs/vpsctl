@@ -319,6 +319,191 @@ describe("Vultr instances", () => {
   });
 });
 
+describe("Vultr instance login credentials", () => {
+  test("retrieves the default password only through the login-specific request", async () => {
+    const password = "  example $'\\\"! 密碼  ";
+    const { provider, requests } = harness([
+      json({
+        instance: instance({
+          os: "Ubuntu 24.04 x64",
+          user_scheme: "root",
+          default_password: password,
+        }),
+      }),
+    ]);
+
+    expect(await provider.getInstanceLoginCredential("instance-1")).toEqual({
+      user: "root",
+      password,
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe("GET");
+    expect(requests[0]?.url).toBe(
+      "https://api.vultr.com/v2/instances/instance-1",
+    );
+    expect(await requests[0]?.text()).toBe("");
+    expect(JSON.stringify(provider)).not.toContain(password);
+    expect(JSON.stringify(provider)).not.toContain(api_key);
+  });
+
+  test("associates a limited-user password with linuxuser instead of root", async () => {
+    const { provider } = harness([
+      json({
+        instance: instance({
+          os: "Debian 12 x64",
+          user_scheme: "limited",
+        }),
+      }),
+    ]);
+
+    expect(await provider.getInstanceLoginCredential("instance-1")).toEqual({
+      user: "linuxuser",
+      password: "private-password",
+    });
+  });
+
+  test.each([undefined, null, ""])(
+    "returns no credential when the provider omits or expires the password: %j",
+    async (default_password) => {
+      const { provider } = harness([
+        json({ instance: instance({ user_scheme: "root", default_password }) }),
+      ]);
+
+      expect(
+        await provider.getInstanceLoginCredential("instance-1"),
+      ).toBeUndefined();
+    },
+  );
+
+  test.each([
+    { os: "Windows 2025 Standard", user_scheme: "root" },
+    { os: "Windows Server 2022", user_scheme: "limited" },
+    { os: "Ubuntu 24.04 x64" },
+    { os: "Ubuntu 24.04 x64", user_scheme: "unknown-scheme" },
+  ])(
+    "does not assign a password to an unsupported or unknown login user: %j",
+    async (metadata) => {
+      const { provider } = harness([json({ instance: instance(metadata) })]);
+
+      expect(
+        await provider.getInstanceLoginCredential("instance-1"),
+      ).toBeUndefined();
+    },
+  );
+
+  test.each([
+    "secret\nvalue",
+    "secret\rvalue",
+    "secret\0value",
+    "secret\tvalue",
+    123,
+  ])(
+    "rejects a malformed credential without including its value: %j",
+    async (default_password) => {
+      const { provider } = harness([
+        json({ instance: instance({ user_scheme: "root", default_password }) }),
+      ]);
+      const error = await provider
+        .getInstanceLoginCredential("instance-1")
+        .catch((error: unknown) => error);
+
+      expect(error).toMatchObject({ code: "invalid_response" });
+      expect(String(error)).not.toContain("secret");
+    },
+  );
+
+  test("rejects credentials returned for a different instance", async () => {
+    const { provider } = harness([
+      json({ instance: instance({ id: "instance-2", user_scheme: "root" }) }),
+    ]);
+    const error = await provider
+      .getInstanceLoginCredential("instance-1")
+      .catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ code: "invalid_response" });
+    expect(String(error)).not.toContain("private-password");
+  });
+
+  test("rejects unsafe instance IDs before requesting credentials", async () => {
+    const { provider, requests } = harness([]);
+
+    await expect(
+      provider.getInstanceLoginCredential("../other-instance"),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(requests).toHaveLength(0);
+  });
+
+  test.each([
+    [401, "authentication"],
+    [403, "forbidden"],
+    [404, "not_found"],
+    [503, "provider_error"],
+  ])(
+    "preserves HTTP %i identity without exposing credential endpoint error details",
+    async (status_code, code) => {
+      const { provider } = harness([
+        json(
+          {
+            error: `Credential failure: private-password ${api_key}`,
+            default_password: "private-password",
+          },
+          status_code,
+        ),
+      ]);
+      const error = await provider
+        .getInstanceLoginCredential("instance-1")
+        .catch((error: unknown) => error);
+
+      expect(error).toMatchObject({ code, status_code });
+      expect(String(error)).toContain("Unable to retrieve");
+      expect(String(error)).not.toContain("private-password");
+      expect(String(error)).not.toContain(api_key);
+    },
+  );
+
+  test("does not expose credentials in malformed JSON or network errors", async () => {
+    const malformed = harness([
+      new Response('{"default_password":"private-password"', { status: 200 }),
+    ]).provider;
+    const network = new VultrProvider({
+      api_key,
+      fetch: async () => {
+        throw new Error(`Network failure: private-password ${api_key}`);
+      },
+    });
+
+    for (const provider of [malformed, network]) {
+      const error = await provider
+        .getInstanceLoginCredential("instance-1")
+        .catch((error: unknown) => error);
+
+      expect(error).toBeInstanceOf(AppError);
+      expect(String(error)).not.toContain("private-password");
+      expect(String(error)).not.toContain(api_key);
+    }
+  });
+
+  test("keeps login credentials out of instance list, get, create, and edit results", async () => {
+    const value = instance({ user_scheme: "root" });
+    const { provider } = harness([
+      json({ instances: [value] }),
+      json({ instance: value }),
+      json({ instance: value }, 202),
+      json({ instance: value }),
+    ]);
+    const results = [
+      await provider.listInstances(),
+      await provider.getInstance("instance-1"),
+      await provider.createInstance(create_input),
+      await provider.editInstance("instance-1", { label: "renamed" }),
+    ];
+
+    expect(JSON.stringify(results)).not.toContain("default_password");
+    expect(JSON.stringify(results)).not.toContain("private-password");
+    expect(JSON.stringify(results)).not.toContain("user_scheme");
+  });
+});
+
 describe("Vultr instance pricing", () => {
   test("joins a paginated plan catalog once for all listed instances", async () => {
     const { provider, requests } = harness([

@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 import { z } from "zod";
 import { AppError } from "./errors.ts";
 import { validateSshUser } from "./ssh.ts";
+import { withSshPassword } from "./ssh-password.ts";
 
 export interface CtlMethod {
   method_id: string;
@@ -44,7 +45,18 @@ export interface CtlClient {
     method_id: string,
     input: CtlHostInput,
   ): Promise<CtlHost>;
-  connect(host_id: string, method_id: string): Promise<number>;
+  connect(
+    host_id: string,
+    method_id: string,
+    authentication?: CtlPasswordAuthentication,
+  ): Promise<number>;
+}
+
+export interface CtlPasswordAuthentication {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
 }
 
 interface CtlProcessOptions {
@@ -205,10 +217,14 @@ export function createCtlClient(
     args: string[],
     operation: string,
     inherit_stdio = false,
+    extra_env: Readonly<Record<string, string>> = {},
   ): Promise<{ exit_code: number; stdout: string }> => {
     let result: { exit_code: number; stdout: string };
     try {
-      result = await runner(args, { env, inherit_stdio });
+      result = await runner(args, {
+        env: { ...env, ...extra_env },
+        inherit_stdio,
+      });
     } catch (error) {
       const code =
         error !== null && typeof error === "object" && "code" in error
@@ -297,8 +313,50 @@ export function createCtlClient(
       }
       return host;
     },
-    async connect(host_id, method_id) {
+    async connect(host_id, method_id, authentication) {
       validateIds(host_id, method_id);
+      if (authentication !== undefined) {
+        validateInput({
+          name: "vpsctl",
+          destination: authentication.host,
+          port: authentication.port,
+          user: authentication.user,
+        });
+        return withSshPassword(
+          authentication,
+          authentication.password,
+          async (askpass_env) => {
+            const password_options = [
+              "PreferredAuthentications=password",
+              "PasswordAuthentication=yes",
+              "PubkeyAuthentication=no",
+              "KbdInteractiveAuthentication=no",
+              "BatchMode=no",
+              "NumberOfPasswordPrompts=1",
+              "ControlMaster=no",
+              "ControlPath=none",
+              "ProxyCommand=none",
+              "ProxyJump=none",
+              `HostName=${authentication.host}`,
+              `User=${authentication.user}`,
+              `Port=${authentication.port}`,
+            ];
+            const result = await run(
+              [
+                "--method",
+                method_id,
+                "ssh",
+                ...password_options.flatMap((value) => ["-o", value]),
+                host_id,
+              ],
+              "connect with the provider login credential",
+              true,
+              { ...askpass_env, LC_ALL: "C", LANG: "C" },
+            );
+            return result.exit_code;
+          },
+        );
+      }
       const result = await run(
         ["--method", method_id, "ssh", host_id],
         "connect to the saved host",

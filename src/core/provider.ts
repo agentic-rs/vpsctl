@@ -33,6 +33,11 @@ export interface Instance {
   ssh_method?: "direct" | "proxy";
 }
 
+export interface InstanceLoginCredential {
+  user: string;
+  password: string;
+}
+
 export interface AcceptedInstance {
   provider_id: string;
   id: string;
@@ -198,6 +203,9 @@ export interface Provider {
   ): Promise<AccountMetadata>;
   listInstances(options?: InstanceListOptions): Promise<Instance[]>;
   getInstance(id: string): Promise<Instance>;
+  getInstanceLoginCredential?(
+    id: string,
+  ): Promise<InstanceLoginCredential | undefined>;
   createInstance(input: CreateInstanceInput): Promise<InstanceMutationResult>;
   editInstance(
     id: string,

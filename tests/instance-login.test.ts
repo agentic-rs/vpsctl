@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -13,6 +13,7 @@ import type { CtlClient, CtlHost } from "../src/core/ctl.ts";
 import { AppError } from "../src/core/errors.ts";
 import type {
   Instance,
+  InstanceLoginCredential,
   Provider,
   ProviderDefinition,
 } from "../src/core/provider.ts";
@@ -26,6 +27,12 @@ interface CtlCall {
   host_id?: string;
   method_id?: string;
   input?: HostInput;
+  authentication?: {
+    user: string;
+    host: string;
+    port: number;
+    password: string;
+  };
 }
 
 interface RunOptions {
@@ -39,6 +46,7 @@ const temp_dirs: string[] = [];
 const account_id = "sample-primary";
 const second_account_id = "sample-secondary";
 const synthetic_secret = "synthetic-provider-api-key";
+const synthetic_password = "synthetic-instance-password";
 
 function instance(overrides: Partial<Instance> = {}): Instance {
   return {
@@ -119,6 +127,8 @@ async function fixture(
   const hosts: CtlHost[] = [];
   const fail = new Map<string, Error>();
   let connection_exit_code = 0;
+  let supports_login_credential = false;
+  let login_credential: InstanceLoginCredential | undefined;
   const info = {
     id: provider_id,
     name: "Example provider",
@@ -146,6 +156,16 @@ async function fixture(
           if (fail.has("get")) throw fail.get("get");
           return fresh;
         },
+        ...(supports_login_credential
+          ? {
+              async getInstanceLoginCredential(id: string) {
+                provider_calls.push(`credential:${id}`);
+                trace.push("provider:credential");
+                if (fail.has("credential")) throw fail.get("credential");
+                return login_credential;
+              },
+            }
+          : {}),
         createInstance: unexpected,
         editInstance: unexpected,
         destroyInstance: unexpected,
@@ -223,8 +243,13 @@ async function fixture(
       hosts[position] = host;
       return host;
     },
-    async connect(host_id, method_id) {
-      ctl_calls.push({ action: "connect", host_id, method_id });
+    async connect(host_id, method_id, authentication) {
+      ctl_calls.push({
+        action: "connect",
+        host_id,
+        method_id,
+        ...(authentication === undefined ? {} : { authentication }),
+      });
       trace.push("ctl:connect");
       if (fail.has("connect")) throw fail.get("connect");
       return connection_exit_code;
@@ -286,6 +311,7 @@ async function fixture(
   return {
     run,
     store,
+    config_path,
     inventory,
     hosts,
     ctl,
@@ -298,6 +324,10 @@ async function fixture(
     },
     setConnectionExitCode(value: number) {
       connection_exit_code = value;
+    },
+    setLoginCredential(value: InstanceLoginCredential | undefined) {
+      supports_login_credential = true;
+      login_credential = value;
     },
   };
 }
@@ -957,5 +987,413 @@ describe("instance login through ctl", () => {
     expect(result.prompts).toEqual([]);
     expect(f.provider_calls).toEqual([]);
     expect(f.ctl_calls).toEqual([]);
+  });
+
+  test("fetches a provider password before saving and passes it only to the connection", async () => {
+    for (const existing of [false, true]) {
+      const f = await fixture();
+      if (existing) f.hosts.push(savedHost());
+      f.setFresh(instance({ public_ipv4: "192.0.2.20", ssh_port: 2222 }));
+      f.setLoginCredential({ user: "root", password: synthetic_password });
+      const original_config = await readFile(f.config_path, "utf8");
+
+      const result = await f.run(["instance-example"]);
+
+      expect(result.exit_code).toBe(0);
+      expect(
+        f.provider_calls.filter((call) => call.startsWith("credential:")),
+      ).toEqual(["credential:instance-example"]);
+      expect(f.trace.indexOf("provider:get")).toBeLessThan(
+        f.trace.indexOf("provider:credential"),
+      );
+      expect(f.trace.indexOf("provider:credential")).toBeLessThan(
+        f.trace.indexOf(existing ? "ctl:update" : "ctl:create"),
+      );
+      expect(f.ctl_calls.at(-1)).toEqual({
+        action: "connect",
+        host_id: existing ? "host-example" : "host-created-1",
+        method_id: existing ? "method-example" : "method-created",
+        authentication: expect.objectContaining({
+          user: "root",
+          host: "192.0.2.20",
+          port: 2222,
+          password: synthetic_password,
+        }),
+      });
+      expect(
+        JSON.stringify(
+          f.ctl_calls.filter((call) => call.action !== "connect"),
+        ) +
+          JSON.stringify(f.hosts) +
+          result.stdout +
+          result.stderr,
+      ).not.toContain(synthetic_password);
+      expect(await readFile(f.config_path, "utf8")).toBe(original_config);
+      expect(result.stdout + result.stderr).not.toContain(synthetic_secret);
+    }
+  });
+
+  test("uses the credential username ahead of a stale saved username", async () => {
+    const f = await fixture();
+    f.hosts.push(savedHost());
+    const fresh = instance();
+    delete fresh.ssh_user;
+    f.setFresh(fresh);
+    f.setLoginCredential({ user: "linuxuser", password: synthetic_password });
+
+    const result = await f.run(["instance-example"], { interactive: true });
+
+    expect(result.exit_code).toBe(0);
+    expect(result.text_prompts).toEqual([]);
+    expect(
+      f.ctl_calls.find((call) => call.action === "update")?.input?.user,
+    ).toBe("linuxuser");
+    expect(f.ctl_calls.at(-1)?.authentication?.user).toBe("linuxuser");
+  });
+
+  test("uses the provider username without prompting when instance metadata omits it", async () => {
+    const f = await fixture();
+    const fresh = instance();
+    delete fresh.ssh_user;
+    f.setFresh(fresh);
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+
+    const result = await f.run(["instance-example"]);
+
+    expect(result.exit_code).toBe(0);
+    expect(result.text_prompts).toEqual([]);
+    expect(f.ctl_calls.at(-1)?.authentication?.user).toBe("root");
+  });
+
+  test("permits a matching username override and binds the password to the selected port", async () => {
+    const f = await fixture();
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+
+    const result = await f.run([
+      "instance-example",
+      "--user",
+      "root",
+      "--port",
+      "2200",
+    ]);
+
+    expect(result.exit_code).toBe(0);
+    expect(f.ctl_calls.at(-1)?.authentication).toMatchObject({
+      user: "root",
+      host: "192.0.2.10",
+      port: 2200,
+      password: synthetic_password,
+    });
+  });
+
+  test("rejects a different username before saving or connecting with another user's password", async () => {
+    const f = await fixture();
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+
+    const result = await f.run(["instance-example", "--user", "other-user"]);
+
+    expect(result.exit_code).toBe(1);
+    expect(f.ctl_calls.every((call) => call.action === "list")).toBe(true);
+    expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+  });
+
+  test("rejects a credential username that disagrees with the reported instance username", async () => {
+    const f = await fixture();
+    f.setLoginCredential({ user: "linuxuser", password: synthetic_password });
+
+    const result = await f.run(["instance-example"]);
+
+    expect(result.exit_code).toBe(1);
+    expect(f.ctl_calls.every((call) => call.action === "list")).toBe(true);
+    expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+  });
+
+  test("rejects routed password connections before saving so route prerequisites cannot use Keychain", async () => {
+    for (const route of [
+      { vpn_connection_id: "example-vpn" },
+      { gateway_route: [{ kind: "ssh", gateway_id: "example-gateway" }] },
+      { gateways: [{ destination: "gateway.example.invalid" }] },
+    ]) {
+      const f = await fixture();
+      const saved = savedHost();
+      const method = saved.connection_methods[0];
+      if (!method) throw new Error("Missing synthetic method.");
+      Object.assign(method.target, route);
+      f.hosts.push(saved);
+      f.setLoginCredential({ user: "root", password: synthetic_password });
+
+      const result = await f.run(["instance-example"]);
+
+      expect(result.exit_code).toBe(1);
+      expect(result.stderr).toContain("direct ctl connection");
+      expect(f.ctl_calls).toEqual([{ action: "list" }]);
+      expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+    }
+  });
+
+  for (const operation of ["create", "update"] as const) {
+    test(`rejects a route added to the saved ${operation} response before passing a provider password`, async () => {
+      const f = await fixture();
+      if (operation === "update") f.hosts.push(savedHost());
+      f.setLoginCredential({ user: "root", password: synthetic_password });
+      const injectRoute = (saved: CtlHost): CtlHost => {
+        const method = saved.connection_methods[0];
+        if (!method) throw new Error("Missing synthetic method.");
+        method.target.gateway_route = [
+          { kind: "ssh", gateway_id: "example-gateway" },
+        ];
+        return saved;
+      };
+      if (operation === "create") {
+        const create = f.ctl.createHost.bind(f.ctl);
+        f.ctl.createHost = async (input) => injectRoute(await create(input));
+      } else {
+        const update = f.ctl.updateHost.bind(f.ctl);
+        f.ctl.updateHost = async (host_id, method_id, input) =>
+          injectRoute(await update(host_id, method_id, input));
+      }
+
+      const result = await f.run(["instance-example"]);
+
+      expect(result.exit_code).toBe(1);
+      expect(f.ctl_calls.some((call) => call.action === operation)).toBe(true);
+      expect(f.ctl_calls.some((call) => call.action === "connect")).toBe(false);
+      expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+    });
+  }
+
+  test("retains a direct saved key reference while passing the provider password only transiently", async () => {
+    const f = await fixture();
+    const saved = savedHost();
+    const method = saved.connection_methods[0];
+    if (!method) throw new Error("Missing synthetic method.");
+    method.target.identity_file = "/example/ssh/id-test";
+    f.hosts.push(saved);
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+
+    const result = await f.run(["instance-example"]);
+
+    expect(result.exit_code).toBe(0);
+    expect(f.hosts[0]?.connection_methods[0]?.target.identity_file).toBe(
+      "/example/ssh/id-test",
+    );
+    expect(
+      f.ctl_calls.find((call) => call.action === "update")?.input,
+    ).not.toHaveProperty("password");
+    expect(f.ctl_calls.at(-1)?.authentication?.password).toBe(
+      synthetic_password,
+    );
+  });
+
+  test("does not fetch or expose passwords in human or JSON dry-run previews", async () => {
+    for (const args of [["--dry-run"], ["--dry-run", "--json"]]) {
+      const f = await fixture();
+      f.setLoginCredential({ user: "root", password: synthetic_password });
+      f.fail.set("credential", new Error("Unexpected credential retrieval."));
+
+      const result = await f.run(["instance-example", ...args]);
+
+      expect(result.exit_code).toBe(0);
+      expect(
+        f.provider_calls.some((call) => call.startsWith("credential:")),
+      ).toBe(false);
+      expect(f.ctl_calls).toEqual([{ action: "list" }]);
+      expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+      expect(result.stdout + result.stderr).not.toContain("password");
+      if (args.includes("--json")) {
+        expect(JSON.parse(result.stdout).data.auth_method).toBe("provider");
+      }
+    }
+  });
+
+  test("reports the explicit ctl authentication choice in previews without fetching a password", async () => {
+    const f = await fixture();
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+
+    const result = await f.run([
+      "instance-example",
+      "--auth",
+      "ctl",
+      "--dry-run",
+      "--json",
+    ]);
+
+    expect(result.exit_code).toBe(0);
+    expect(JSON.parse(result.stdout).data.auth_method).toBe("ctl");
+    expect(
+      f.provider_calls.some((call) => call.startsWith("credential:")),
+    ).toBe(false);
+    expect(f.ctl_calls).toEqual([{ action: "list" }]);
+    expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+  });
+
+  test("rejects an unknown authentication mode before provider or ctl calls", async () => {
+    const f = await fixture();
+
+    const result = await f.run(["instance-example", "--auth", "unknown"]);
+
+    expect(result.exit_code).toBe(1);
+    expect(f.provider_calls).toEqual([]);
+    expect(f.ctl_calls).toEqual([]);
+  });
+
+  test("stops when a capable provider has no usable password without silently using Keychain", async () => {
+    const f = await fixture();
+    f.setLoginCredential(undefined);
+
+    const result = await f.run(["instance-example"]);
+
+    expect(result.exit_code).toBe(1);
+    expect(f.provider_calls).toContain("credential:instance-example");
+    expect(f.ctl_calls.every((call) => call.action === "list")).toBe(true);
+    expect(result.stderr).toContain("--auth ctl");
+  });
+
+  test("only uses normal ctl authentication for a capable provider when explicitly requested", async () => {
+    const f = await fixture();
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+    f.fail.set("credential", new Error("Unexpected credential retrieval."));
+
+    const result = await f.run(["instance-example", "--auth", "ctl"]);
+
+    expect(result.exit_code).toBe(0);
+    expect(
+      f.provider_calls.some((call) => call.startsWith("credential:")),
+    ).toBe(false);
+    expect(f.ctl_calls.at(-1)).toEqual({
+      action: "connect",
+      host_id: "host-created-1",
+      method_id: "method-created",
+    });
+  });
+
+  test("retains saved routes when the user explicitly chooses ctl authentication", async () => {
+    const f = await fixture();
+    const saved = savedHost();
+    const method = saved.connection_methods[0];
+    if (!method) throw new Error("Missing synthetic method.");
+    method.target.vpn_connection_id = "example-vpn";
+    f.hosts.push(saved);
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+
+    const result = await f.run(["instance-example", "--auth", "ctl"]);
+
+    expect(result.exit_code).toBe(0);
+    expect(
+      f.provider_calls.some((call) => call.startsWith("credential:")),
+    ).toBe(false);
+    expect(f.hosts[0]?.connection_methods[0]?.target.vpn_connection_id).toBe(
+      "example-vpn",
+    );
+    expect(f.ctl_calls.at(-1)?.authentication).toBeUndefined();
+  });
+
+  test("rejects provider-password authentication when the provider cannot supply a password", async () => {
+    const f = await fixture("runpod");
+    f.setFresh(
+      instance({
+        provider_id: "runpod",
+        ssh_host: "server.example.invalid",
+        ssh_port: 2222,
+      }),
+    );
+
+    const result = await f.run(["instance-example", "--auth", "provider"]);
+
+    expect(result.exit_code).toBe(1);
+    expect(f.ctl_calls.some((call) => call.action !== "list")).toBe(false);
+  });
+
+  test("keeps providers without a credential operation on their existing authentication path", async () => {
+    for (const provider_id of ["runpod", "vast"] as const) {
+      const f = await fixture(provider_id);
+      f.setFresh(
+        instance({
+          provider_id,
+          ssh_host: "server.example.invalid",
+          ssh_port: 2222,
+        }),
+      );
+
+      const result = await f.run(["instance-example"]);
+
+      expect(result.exit_code).toBe(0);
+      expect(
+        f.provider_calls.some((call) => call.startsWith("credential:")),
+      ).toBe(false);
+      expect(f.ctl_calls.at(-1)?.authentication).toBeUndefined();
+    }
+  });
+
+  test("stops when credential retrieval fails without saving a host or falling back", async () => {
+    for (const failure of [
+      new Error(synthetic_password),
+      new AppError("provider_error", synthetic_password),
+    ]) {
+      const f = await fixture();
+      f.setLoginCredential({ user: "root", password: synthetic_password });
+      f.fail.set("credential", failure);
+
+      const result = await f.run(["instance-example"]);
+
+      expect(result.exit_code).toBe(1);
+      expect(f.ctl_calls.every((call) => call.action === "list")).toBe(true);
+      expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+    }
+  });
+
+  test("rejects malformed credentials before saving or connecting without printing their values", async () => {
+    for (const credential of [
+      { user: "root", password: "" },
+      { user: "root", password: `${synthetic_password}\nextra` },
+      { user: "root", password: `${synthetic_password}\u0000extra` },
+      { user: "root", password: synthetic_password.repeat(200) },
+      { user: "invalid user", password: synthetic_password },
+    ]) {
+      const f = await fixture();
+      f.setLoginCredential(credential);
+
+      const result = await f.run(["instance-example"]);
+
+      expect(result.exit_code).toBe(1);
+      expect(f.ctl_calls.every((call) => call.action === "list")).toBe(true);
+      expect(result.stdout + result.stderr).not.toContain(synthetic_password);
+    }
+  });
+
+  test("does not fetch credentials for an invalid or stopped endpoint", async () => {
+    for (const fresh of [
+      instance({ status: "stopped" }),
+      instance({ ssh_host: "-invalid", ssh_port: 22 }),
+      instance({ id: "different-instance" }),
+    ]) {
+      const f = await fixture();
+      f.setFresh(fresh);
+      f.setLoginCredential({ user: "root", password: synthetic_password });
+
+      const result = await f.run(["instance-example"]);
+
+      expect(result.exit_code).toBe(1);
+      expect(
+        f.provider_calls.some((call) => call.startsWith("credential:")),
+      ).toBe(false);
+      expect(f.ctl_calls.some((call) => call.action !== "list")).toBe(false);
+    }
+  });
+
+  test("propagates a failed password connection without exposing or retaining the secret", async () => {
+    const f = await fixture();
+    f.setLoginCredential({ user: "root", password: synthetic_password });
+    f.setConnectionExitCode(255);
+
+    const result = await f.run(["instance-example"]);
+
+    expect(result.exit_code).toBe(255);
+    expect(f.ctl_calls.at(-1)?.authentication?.password).toBe(
+      synthetic_password,
+    );
+    expect(
+      JSON.stringify(f.hosts) + result.stdout + result.stderr,
+    ).not.toContain(synthetic_password);
   });
 });

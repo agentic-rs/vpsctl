@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   type CtlHost,
   type CtlHostInput,
+  type CtlPasswordAuthentication,
   type CtlProcessRunner,
   createCtlClient,
 } from "../src/core/ctl.ts";
@@ -34,6 +35,13 @@ const input: CtlHostInput = {
   port: 2222,
   user: "example-user",
   identity_file: "example keys/private-key",
+};
+
+const password_authentication: CtlPasswordAuthentication = {
+  user: "example-user",
+  host: "server.example.invalid",
+  port: 2222,
+  password: "synthetic-instance-password",
 };
 
 function harness(responses: { exit_code: number; stdout: string }[] = []) {
@@ -207,6 +215,155 @@ describe("ctl saved-host client", () => {
         options: { env, inherit_stdio: true },
       },
     ]);
+  });
+
+  test("uses a transient askpass helper and bypasses managed or configured SSH masters for provider passwords", async () => {
+    const { client, calls, env } = harness([{ exit_code: 7, stdout: "" }]);
+
+    expect(
+      await client.connect(
+        host.host_id,
+        host.preferred_method_id,
+        password_authentication,
+      ),
+    ).toBe(7);
+
+    const call = calls[0];
+    if (!call) throw new Error("Expected a ctl connection.");
+    expect(call.args.slice(0, 3)).toEqual([
+      "--method",
+      host.preferred_method_id,
+      "ssh",
+    ]);
+    expect(call.args.at(-1)).toBe(host.host_id);
+    const options = call.args.slice(3, -1);
+    expect(options.length % 2).toBe(0);
+    for (let index = 0; index < options.length; index += 2) {
+      expect(options[index]).toBe("-o");
+    }
+    for (const option of [
+      "PreferredAuthentications=password",
+      "PasswordAuthentication=yes",
+      "PubkeyAuthentication=no",
+      "KbdInteractiveAuthentication=no",
+      "BatchMode=no",
+      "NumberOfPasswordPrompts=1",
+      "ControlMaster=no",
+      "ControlPath=none",
+      "ProxyCommand=none",
+      "ProxyJump=none",
+      `HostName=${password_authentication.host}`,
+      `User=${password_authentication.user}`,
+      `Port=${password_authentication.port}`,
+    ]) {
+      expect(options).toContain(option);
+    }
+    expect(call.options.inherit_stdio).toBe(true);
+    expect(call.options.env).toMatchObject({
+      ...env,
+      SSH_ASKPASS_REQUIRE: "force",
+      LC_ALL: "C",
+      LANG: "C",
+    });
+    expect(call.options.env.SSH_ASKPASS).toBeTruthy();
+    expect(JSON.stringify(calls)).not.toContain(
+      password_authentication.password,
+    );
+  });
+
+  test("validates password authentication endpoints before starting ctl", async () => {
+    for (const invalid of [
+      { ...password_authentication, user: "other user" },
+      { ...password_authentication, host: "-invalid" },
+      { ...password_authentication, port: 0 },
+      { ...password_authentication, port: 65536 },
+    ]) {
+      const { client, calls } = harness();
+      const error = await errorFrom(
+        client.connect(host.host_id, host.preferred_method_id, invalid),
+      );
+
+      expect(error.code).toBe("invalid_input");
+      expect(error.message).not.toContain(password_authentication.password);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  test("delivers the password through the generated askpass process and removes the helper after the session", async () => {
+    let helper_path = "";
+    const client = createCtlClient({}, async (args, options) => {
+      const helper = options.env.SSH_ASKPASS;
+      if (!helper) throw new Error("Expected a temporary askpass helper.");
+      helper_path = helper;
+      expect(await readFile(helper_path, "utf8")).not.toContain(
+        password_authentication.password,
+      );
+      expect(JSON.stringify({ args, options })).not.toContain(
+        password_authentication.password,
+      );
+      expect(options.inherit_stdio).toBe(true);
+      const process = Bun.spawn(
+        [
+          helper_path,
+          `${password_authentication.user}@${password_authentication.host}'s password: `,
+        ],
+        {
+          env: { ...options.env },
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const [stdout, stderr, exit_code] = await Promise.all([
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+        process.exited,
+      ]);
+      expect(exit_code).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toBe(`${password_authentication.password}\n`);
+      return { exit_code: 23, stdout: "" };
+    });
+
+    expect(
+      await client.connect(
+        host.host_id,
+        host.preferred_method_id,
+        password_authentication,
+      ),
+    ).toBe(23);
+    expect(helper_path).not.toBe("");
+    expect(await Bun.file(helper_path).exists()).toBe(false);
+  });
+
+  test("sanitizes password-connection spawn errors while keeping secrets out of process arguments and environment", async () => {
+    for (const code of ["ENOENT", "EACCES"]) {
+      let process_input = "";
+      let helper_path = "";
+      const client = createCtlClient({}, async (args, options) => {
+        process_input = JSON.stringify({ args, options });
+        helper_path = options.env.SSH_ASKPASS ?? "";
+        throw Object.assign(new Error(password_authentication.password), {
+          code,
+        });
+      });
+
+      const error = await errorFrom(
+        client.connect(
+          host.host_id,
+          host.preferred_method_id,
+          password_authentication,
+        ),
+      );
+
+      expect(error.code).toBe(
+        code === "ENOENT" ? "not_found" : "provider_error",
+      );
+      expect(error.message).not.toContain(password_authentication.password);
+      expect(process_input).not.toContain(password_authentication.password);
+      expect(helper_path).not.toBe("");
+      expect(await Bun.file(helper_path).exists()).toBe(false);
+    }
   });
 
   test("accepts IPv4, IPv6, and absolute DNS endpoints without a shell", async () => {
